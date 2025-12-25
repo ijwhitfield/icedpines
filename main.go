@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
 	"slices"
 
@@ -11,7 +12,7 @@ const windowWidth int32 = 600
 const windowHeight int32 = 800
 
 const playerWidth int32 = 50
-const playerSpeed float32 = 300
+const playerAcceleration float32 = 200
 
 const entitysMaxCount int32 = 512
 const entitysPlayerIndex int32 = 1
@@ -21,6 +22,7 @@ const bExists uint64 = 1 << 0
 const bIced uint64 = 1 << 2
 const bBooster uint64 = 1 << 3
 const bCanBeIced uint64 = 1 << 4
+const bEarnsPoints uint64 = 1 << 5
 
 type Entity struct {
 	/* PHYSICS */
@@ -30,11 +32,13 @@ type Entity struct {
 	width, height float32 // this is purely visually for now, hitbox defined lower
 
 	/* GAMEPLAY */
-	behavior     uint64
-	hp           int32
-	damage       int32
-	hitboxWidth  float32
-	hitboxHeight float32
+	behavior      uint64
+	hp            int32
+	damage        int32
+	wishSpeed     float32
+	hitbox        rl.Rectangle
+	invulnTime    float32
+	invulnTimeMax float32
 
 	/* ANIMATIONS */
 	color color.RGBA
@@ -56,6 +60,7 @@ type Game struct {
 	playTime       float64
 	playerPoints   float32
 	obstaclePoints float32
+	furthestY      float32
 	lastBarrierY   float32
 	camera         Camera
 	input          Input
@@ -75,6 +80,7 @@ const viewDistance float32 = 2000
 const hillWidth float32 = 2000
 const barrierDistance float32 = 100
 const cameraFollowDistance float32 = 150
+const startingHeight float32 = 100000
 
 func cameraProjectRectangle(camera Camera, input rl.Rectangle) (rl.Rectangle, bool) {
 	output := rl.Rectangle{}
@@ -101,7 +107,7 @@ func cameraProjectRectangle(camera Camera, input rl.Rectangle) (rl.Rectangle, bo
 }
 
 func aabbCollisionCheck(r1 rl.Rectangle, r2 rl.Rectangle) bool {
-	return r1.X > r2.X && r1.X < r2.X+r2.Width && r1.Y > r2.Y && r1.Y < r2.Y+r2.Height
+	return r1.X+r1.Width > r2.X && r1.X < r2.X+r2.Width && r1.Y+r1.Height > r2.Y && r1.Y < r2.Y+r2.Height
 }
 
 func YSort(a indexYPair, b indexYPair) int {
@@ -144,23 +150,54 @@ func draw(game Game) {
 			if visible {
 				// texture := animGetTexture(entity.animIndex, entity.animStartTime)
 				// rl.DrawTexturePro(texture, src, postProjection, origin, 0, color.White.RGBA())
-				rl.DrawRectangleRec(postProjection, entity.color)
+				if entity.invulnTime > 0 && int32(entity.invulnTime*5)%2 == 0 {
+					continue
+				}
+				color := entity.color
+				if entity.hp <= 0 {
+					color.A /= 2
+				}
+				rl.DrawRectangleRec(postProjection, color)
 			}
 		}
 	}
+
 	/* UI */
+	player := game.entitys[entitysPlayerIndex]
+	rl.DrawText(fmt.Sprintf("Altitude: %.0f", game.furthestY/100), 20, 20, 24, color.RGBA{0, 0, 0, 255})
+	rl.DrawText(fmt.Sprintf("Speed: %.0f", -player.vy), 20, 50, 24, color.RGBA{0, 0, 0, 255})
+	if player.y <= 0 {
+		rl.DrawText("YOU WIN", 20, windowHeight/2, 24, color.RGBA{0, 0, 0, 255})
+	}
+	// rl.DrawText("Points: 0", 20, 20, 24, color.RGBA{0, 0, 0, 255})
+
+	/* DEBUG OVERLAY */
+	if showOverlay {
+		for i := range entitysMaxCount {
+			entity := game.entitys[i]
+			hitbox := getHitbox(entity)
+			hitbox.X += float32(windowWidth)/2 - game.camera.x
+			hitbox.Y += float32(windowHeight)/2 - game.camera.y
+			rl.DrawRectangleRec(hitbox, color.RGBA{0, 0, 255, 255})
+		}
+	}
 
 	rl.EndDrawing()
 }
 
+const walking bool = false
+const showOverlay bool = false
+
 func updateInput(input *Input) {
 	input.move = rl.Vector2{}
-	// if rl.IsKeyDown(rl.KeyUp) {
-	// 	input.move.Y += 1.0
-	// }
-	// if rl.IsKeyDown(rl.KeyDown) {
-	// 	input.move.Y += -1.0
-	// }
+	if walking {
+		if rl.IsKeyDown(rl.KeyUp) {
+			input.move.Y += -1.0
+		}
+		if rl.IsKeyDown(rl.KeyDown) {
+			input.move.Y += 1.0
+		}
+	}
 	if rl.IsKeyDown(rl.KeyLeft) {
 		input.move.X += -1.0
 	}
@@ -185,32 +222,30 @@ func createObstacle(y float32) Entity {
 	x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
 	y += float32(rl.GetRandomValue(-300, 0))
 	entity := Entity{
-		x:            x,
-		y:            y,
-		width:        100,
-		height:       300,
-		hitboxWidth:  float32(100),
-		hitboxHeight: float32(50),
-		behavior:     bExists | bCanBeIced,
-		hp:           1,
-		damage:       1,
-		animIndex:    2,
-		color:        color.RGBA{0, 255, 0, 255},
+		x:         x,
+		y:         y,
+		width:     100,
+		height:    300,
+		hitbox:    rl.Rectangle{-50, -25 / 2, 100, 25},
+		behavior:  bExists | bCanBeIced,
+		hp:        1,
+		damage:    1,
+		animIndex: 2,
+		color:     color.RGBA{0, 255, 0, 255},
 	}
 	return entity
 }
 
 func createBarrier(x float32, y float32) Entity {
 	entity := Entity{
-		x:            x,
-		y:            y,
-		width:        50,
-		height:       50,
-		hitboxWidth:  float32(50),
-		hitboxHeight: float32(50),
-		behavior:     bExists,
-		animIndex:    3,
-		color:        color.RGBA{0, 0, 0, 255},
+		x:         x,
+		y:         y,
+		hp:        1, // TODO get rid of this once i fix the transparency debug thing
+		width:     50,
+		height:    50,
+		behavior:  bExists,
+		animIndex: 3,
+		color:     color.RGBA{0, 0, 0, 255},
 	}
 	return entity
 }
@@ -229,10 +264,10 @@ func doDamage(entity *Entity, damage int32) {
 
 func getHitbox(entity Entity) rl.Rectangle {
 	return rl.Rectangle{
-		X:      entity.x - entity.hitboxWidth/2,
-		Y:      entity.y - entity.hitboxHeight,
-		Width:  entity.hitboxWidth,
-		Height: entity.hitboxHeight,
+		X:      entity.x + entity.hitbox.X,
+		Y:      entity.y + entity.hitbox.Y,
+		Width:  entity.hitbox.Width,
+		Height: entity.hitbox.Height,
 	}
 }
 
@@ -250,11 +285,13 @@ func update(game *Game) {
 	/* PLAYER MOVEMENT */
 	player := &game.entitys[entitysPlayerIndex]
 	if player.hp > 0 {
-		player.vx = game.input.move.X * playerSpeed * 2
-		player.x = min(player.x, hillWidth/2)
-		player.x = max(player.x, -hillWidth/2)
-		//player.vy = game.input.move.Y * playerSpeed
-		player.vy = -playerSpeed
+		player.vx = game.input.move.X * player.wishSpeed * 2
+		if walking {
+			player.vy = game.input.move.Y * 100
+		} else {
+			player.vy -= playerAcceleration * frameTime
+			player.vy = max(player.vy, -player.wishSpeed)
+		}
 	} else {
 		player.vy *= 1 - 0.5*frameTime
 		player.vx *= 1 - 0.5*frameTime
@@ -270,37 +307,73 @@ func update(game *Game) {
 	}
 
 	/* SPAWNING */
-	game.obstaclePoints += frameTime * 500
-	if game.obstaclePoints > 100 {
+	// TODO this only spawns one thing per frame, even if multiple are possible
+	if game.obstaclePoints > 50 {
 		slot := getFirstEmptyEntity(game.entitys[:entitysMaxCount])
 		if slot != nil {
 			*slot = createObstacle(player.y - viewDistance)
-			game.obstaclePoints -= 100
+			game.obstaclePoints -= 50
 		}
 	}
 
-	/* MOVE AND DESTROY OLD ENTITIES */
+	/* BASIC LOOP */
 	for i := range entitysMaxCount {
 		entity := &game.entitys[i]
 
 		/* MOVE */
 		entity.y += entity.vy * frameTime
 		entity.x += entity.vx * frameTime
+		if entity.behavior&bEarnsPoints != 0 {
+
+			entity.x = min(entity.x, hillWidth/2-float32(playerWidth))
+			entity.x = max(entity.x, -hillWidth/2+float32(playerWidth))
+			if entity.y < game.furthestY {
+				pointsAdded := game.furthestY - entity.y
+				game.furthestY = entity.y
+				game.playerPoints += pointsAdded
+				game.obstaclePoints += pointsAdded
+				entity.wishSpeed += max(0, -entity.vy*frameTime) / 100
+			}
+
+		}
 
 		/* DESPAWN */
 		if entity.y > game.camera.y+50 {
 			*entity = createEmpty()
 		}
+
+		entity.invulnTime -= frameTime
+
 	}
 
 	/* COLLISIONS */
 	for i1 := range entitysMaxCount {
 		e1 := &game.entitys[i1]
+		if e1.hp <= 0 {
+			continue
+		}
 		for i2 := i1 + 1; i2 < entitysMaxCount; i2++ {
 			e2 := &game.entitys[i2]
+			if e2.hp <= 0 {
+				continue
+			}
+			// TODO resolve position as well, using the velocities to determine who moves and how far
+			/*
+				if e1 is dynamic, iterate over *all* other entities and resolve any collisions
+			*/
 			if aabbCollisionCheck(getHitbox(*e1), getHitbox(*e2)) {
-				doDamage(e1, e2.damage)
-				doDamage(e2, e1.damage)
+				if e1.invulnTime <= 0 {
+					doDamage(e1, e2.damage)
+					e1.invulnTime = e1.invulnTimeMax
+				}
+				if e2.invulnTime <= 0 {
+					doDamage(e2, e1.damage)
+					e2.invulnTime = e2.invulnTimeMax
+				}
+				e1.vx = rl.Clamp(-e1.vx, -100, 100)
+				e1.vy = rl.Clamp(-e1.vy, -100, 100)
+				e2.vx = rl.Clamp(-e2.vx, -100, 100)
+				e2.vy = rl.Clamp(-e2.vy, -100, 100)
 			}
 
 		}
@@ -318,15 +391,17 @@ func updateDraw(game *Game) {
 
 func createPlayer() Entity {
 	return Entity{
-		width:        float32(playerWidth),
-		height:       float32(playerWidth),
-		hitboxWidth:  float32(playerWidth),
-		hitboxHeight: float32(playerWidth),
-		hp:           3,
-		vy:           -100,
-		color:        color.RGBA{255, 0, 0, 255},
-		animIndex:    1,
-		behavior:     bExists,
+		y:             startingHeight,
+		width:         float32(playerWidth),
+		height:        float32(playerWidth),
+		hitbox:        rl.Rectangle{-float32(playerWidth) / 2, -25 / 2, float32(playerWidth), 25},
+		hp:            3,
+		damage:        3,
+		invulnTimeMax: 3,
+		wishSpeed:     500,
+		color:         color.RGBA{255, 0, 0, 255},
+		animIndex:     1,
+		behavior:      bExists | bEarnsPoints,
 	}
 }
 
@@ -337,6 +412,8 @@ func reset(game *Game) {
 	*player = createPlayer()
 	game.camera.x = player.x
 	game.camera.y = player.y + cameraFollowDistance
+
+	game.furthestY = startingHeight
 
 	y := player.y
 	for ; y > player.y-viewDistance; y -= barrierDistance {
