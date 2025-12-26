@@ -1,35 +1,12 @@
-endless runner, upgrades and a "win upgrade" to give the game finality
-you're looking at the character from behind as they descend a snowy slope on a snowboard
-you stick your hand in the snow to load a snowball, then throw snowballs at obstacles
-	sticking your hand into the snow is automatic, not a player action, it just represents the cooldown
-when you hit an obstacle, it freezes, and you can slam through it and shatter it
-if it's not frozen and you hit it, you take damage
-random things appear on the slope, gradually more obstacles *and* more boosts/powerups
-powerups should increase the risks you're taking (making you go faster usually)
-
-MVP: you're on a slope, there are boosts that make you faster, there are trees you need to freeze, and you need to hit trees with snowballs to freeze them
--- PREMISE
-jumps
-combo system
-near miss system
-upgrades
-	boost amount
-	time to load snowball
-	tree boost from hitting one
-	amount you get from cash bonus items
-	checkpoints on the mountain
-	amount of damage you can take
-	getting to the bottom of the mountain is the goal
-add upgrade screen
-konami code to play as a pine tree
-
-when you hit a blue tree you get a temporary boost + invincibility (because now you're the icy one)
-if you hit a blue tree it breaks instead of hurting you
-if snowball hits tree it turns blue
-
+juice
+distance shader
 add game start screen
 add run end screen
+add other items
+dead skiers drop hp recoveries
+if you hit a skier with a snowball, they die
 press key to throw snowball
+add little guys that ski past you
 -- TODO
 boost rectangle that makes you faster
 fix collisions (position resolution, disable damage to test)

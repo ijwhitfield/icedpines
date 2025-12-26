@@ -21,11 +21,21 @@ const entitysPlayerIndex int32 = 1
 /* BEHAVIORS */
 const bExists uint64 = 1 << 0
 const bIced uint64 = 1 << 2
-const bBooster uint64 = 1 << 3
+const bSkier uint64 = 1 << 3
 const bCanBeIced uint64 = 1 << 4
 const bEarnsPoints uint64 = 1 << 5
 const bDynamic uint64 = 1 << 6
 const bSolid uint64 = 1 << 7
+const bCausesIce uint64 = 1 << 8
+
+type Timer struct {
+	time float32
+	max  float32
+}
+
+func (timer *Timer) reset() {
+	timer.time = timer.max
+}
 
 type Entity struct {
 	/* PHYSICS */
@@ -35,13 +45,13 @@ type Entity struct {
 	width, height float32 // this is purely visually for now, hitbox defined lower
 
 	/* GAMEPLAY */
-	behavior      uint64
-	hp            int32
-	damage        int32
-	wishSpeed     float32
-	hitbox        rl.Rectangle
-	invulnTime    float32
-	invulnTimeMax float32
+	behavior    uint64
+	hp          int32
+	damage      int32
+	wishSpeed   float32
+	hitbox      rl.Rectangle
+	attackTimer Timer
+	invulnTimer Timer
 
 	/* ANIMATIONS */
 	color color.RGBA
@@ -55,13 +65,15 @@ type Camera struct {
 }
 
 type Input struct {
-	move  rl.Vector2
-	reset bool
+	move     rl.Vector2
+	pause    bool
+	snowball bool
+	item     bool
 }
 
 type Game struct {
 	playTime       float64
-	playerPoints   float32
+	skierPoints    float32
 	obstaclePoints float32
 	furthestY      float32
 	lastBarrierY   float32
@@ -167,7 +179,7 @@ func draw(game Game) {
 			if visible {
 				// texture := animGetTexture(entity.animIndex, entity.animStartTime)
 				// rl.DrawTexturePro(texture, src, postProjection, origin, 0, color.White.RGBA())
-				if entity.invulnTime > 0 && int32(entity.invulnTime*5)%2 == 0 {
+				if entity.invulnTimer.time > 0 && int32(entity.invulnTimer.time*5)%2 == 0 {
 					continue
 				}
 				color := entity.color
@@ -223,7 +235,9 @@ func updateInput(input *Input) {
 		input.move.X += 1.0
 	}
 	input.move = rl.Vector2Normalize(input.move)
-	input.reset = rl.IsKeyPressed(rl.KeyR)
+	input.pause = rl.IsKeyPressed(rl.KeyEscape)
+	input.snowball = rl.IsKeyPressed(rl.KeyX)
+	input.item = rl.IsKeyPressed(rl.KeyZ)
 }
 
 func getFirstEmptyEntity(entitys []Entity) *Entity {
@@ -258,21 +272,45 @@ func addObstacle(y float32, entitys []Entity) bool {
 	return false
 }
 
-func addBooster(y float32, entitys []Entity) bool {
+func addSkier(y float32, entitys []Entity) bool {
 	x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
-	y += float32(rl.GetRandomValue(-300, 0))
+	y += float32(rl.GetRandomValue(0, 150))
 	slot := getFirstEmptyEntity(entitys)
 	if slot != nil {
 		*slot = Entity{
 			x:         x,
 			y:         y,
 			width:     50,
-			height:    25,
-			hitbox:    rl.Rectangle{X: -25, Y: -25 / 2, Width: 50, Height: 25},
+			height:    50,
+			vy:        -800,
+			vx:        -x,
+			hitbox:    rl.Rectangle{X: -25, Y: -25, Width: 50, Height: 50},
 			hp:        1,
 			animIndex: 3,
-			color:     color.RGBA{255, 255, 0, 255},
-			behavior:  bExists | bBooster,
+			color:     color.RGBA{255, 0, 255, 255},
+			behavior:  bExists | bSkier | bCanBeIced,
+		}
+		return true
+	}
+	return false
+}
+
+const snowballSpeed float32 = 1000
+
+func addSnowball(x float32, y float32, entitys []Entity) bool {
+	slot := getFirstEmptyEntity(entitys)
+	if slot != nil {
+		*slot = Entity{
+			x:         x,
+			y:         y,
+			vy:        -snowballSpeed,
+			width:     10,
+			height:    10,
+			hitbox:    rl.Rectangle{X: -5, Y: -5, Width: 10, Height: 10},
+			hp:        1,
+			animIndex: 4,
+			color:     color.RGBA{0, 0, 0, 255},
+			behavior:  bExists | bDynamic | bSolid | bCausesIce,
 		}
 		return true
 	}
@@ -315,17 +353,17 @@ func addBarriers(y float32, entitys []Entity) {
 
 func addPlayer(entitys []Entity) {
 	entitys[entitysPlayerIndex] = Entity{
-		y:             startingHeight,
-		width:         float32(playerWidth),
-		height:        float32(playerWidth),
-		hitbox:        rl.Rectangle{X: -float32(playerWidth) / 2, Y: -25 / 2, Width: float32(playerWidth), Height: 25},
-		hp:            3,
-		damage:        3,
-		invulnTimeMax: 3,
-		wishSpeed:     500,
-		color:         color.RGBA{255, 0, 0, 255},
-		animIndex:     1,
-		behavior:      bExists | bEarnsPoints | bDynamic | bSolid,
+		y:           startingHeight,
+		width:       float32(playerWidth),
+		height:      float32(playerWidth),
+		hitbox:      rl.Rectangle{X: -float32(playerWidth) / 2, Y: -25 / 2, Width: float32(playerWidth), Height: 25},
+		hp:          3,
+		damage:      3,
+		invulnTimer: Timer{0, 3},
+		wishSpeed:   500,
+		color:       color.RGBA{255, 0, 0, 255},
+		animIndex:   1,
+		behavior:    bExists | bEarnsPoints | bDynamic | bSolid,
 	}
 }
 
@@ -361,19 +399,30 @@ func (entity Entity) hasBehavior(flags uint64) bool {
 	return (^entity.behavior & flags) == 0
 }
 
+const skierAcceleration float32 = 1000
+
 func update(game *Game) {
+	/* CONVENIENCE VARS */
+	player := &game.entitys[entitysPlayerIndex]
+
 	/* TIME */
 	frameTime := rl.GetFrameTime()
 	game.playTime += float64(rl.GetFrameTime())
 
 	/* INPUTS */
 	updateInput(&game.input)
-	if game.input.reset {
+	// TODO actually pause instead of reset
+	if game.input.pause {
 		reset(game)
 	}
 
+	if game.input.snowball && player.attackTimer.time <= 0 {
+		if addSnowball(player.x, player.y-50, game.entitys[:]) {
+			player.attackTimer.reset()
+		}
+	}
+
 	/* PLAYER MOVEMENT */
-	player := &game.entitys[entitysPlayerIndex]
 	if player.hp > 0 {
 		player.vx = game.input.move.X * player.wishSpeed * 2
 		if walking {
@@ -395,14 +444,13 @@ func update(game *Game) {
 
 	/* SPAWNING */
 	for game.obstaclePoints > 50 {
-		if rl.GetRandomValue(0, 9) == 0 {
-			if addBooster(player.y-viewDistance, game.entitys[:]) {
-				game.obstaclePoints -= 50
-			}
-		} else {
-			if addObstacle(player.y-viewDistance, game.entitys[:]) {
-				game.obstaclePoints -= 50
-			}
+		if addObstacle(player.y-viewDistance, game.entitys[:]) {
+			game.obstaclePoints -= 50
+		}
+	}
+	for game.skierPoints > 1000 {
+		if addSkier(player.y+150, game.entitys[:]) {
+			game.skierPoints -= 1000
 		}
 	}
 
@@ -414,25 +462,30 @@ func update(game *Game) {
 		entity.y += entity.vy * frameTime
 		entity.x += entity.vx * frameTime
 		if entity.behavior&bEarnsPoints != 0 {
-
 			entity.x = min(entity.x, hillWidth/2-float32(playerWidth))
 			entity.x = max(entity.x, -hillWidth/2+float32(playerWidth))
 			if entity.y < game.furthestY {
 				pointsAdded := game.furthestY - entity.y
 				game.furthestY = entity.y
-				game.playerPoints += pointsAdded
+				game.skierPoints += pointsAdded
 				game.obstaclePoints += pointsAdded
 				entity.wishSpeed += max(0, -entity.vy*frameTime) / 100
 			}
-
+		}
+		if entity.hasBehavior(bSkier) {
+			if entity.x < 0 {
+				entity.vx += skierAcceleration * frameTime
+			} else {
+				entity.vx -= skierAcceleration * frameTime
+			}
 		}
 
 		/* DESPAWN */
-		if entity.y > game.camera.y+50 {
+		if entity.y > game.camera.y+50 || entity.y < game.camera.y-3000 {
 			*entity = createEmpty()
 		}
 
-		entity.invulnTime -= frameTime
+		entity.invulnTimer.time -= frameTime
 
 	}
 
@@ -452,6 +505,12 @@ func update(game *Game) {
 			}
 			collision := aabbCollision(e1.getHitbox(), e2.getHitbox())
 			if collision.Width != 0 && collision.Height != 0 {
+				if e1.hasBehavior(bCausesIce) && e2.hasBehavior(bCanBeIced) {
+					e2.behavior |= bIced
+				}
+				if e2.hasBehavior(bCausesIce) && e1.hasBehavior(bCanBeIced) {
+					e1.behavior |= bIced
+				}
 				if e2.hasBehavior(bSolid) {
 					if sidewaysCollision {
 						timeX := collision.Width / abs(e1.vx-e2.vx)
@@ -482,18 +541,14 @@ func update(game *Game) {
 						panic("NaN position")
 					}
 				}
-				if e2.hasBehavior(bBooster) {
-					e1.wishSpeed += 100
-					e1.vy = -e1.wishSpeed
-				}
 
-				if e1.invulnTime <= 0 && e2.damage > 0 {
+				if e1.invulnTimer.time <= 0 && e2.damage > 0 {
 					e1.addDamage(e2.damage)
-					e1.invulnTime = e1.invulnTimeMax
+					e1.invulnTimer.reset()
 				}
-				if e2.invulnTime <= 0 && e1.damage > 0 {
+				if e2.invulnTimer.time <= 0 && e1.damage > 0 {
 					e2.addDamage(e1.damage)
-					e2.invulnTime = e2.invulnTimeMax
+					e2.invulnTimer.reset()
 				}
 
 			}
@@ -532,5 +587,6 @@ func initGame(game *Game) {
 	reset(game)
 
 	rl.InitWindow(windowWidth, windowHeight, "iced pines")
+	rl.SetExitKey(0)
 	rl.SetTargetFPS(60)
 }
