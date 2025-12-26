@@ -30,9 +30,10 @@ if snowball hits tree it turns blue
 add game start screen
 add run end screen
 press key to throw snowball
+-- TODO
 boost rectangle that makes you faster
 fix collisions (position resolution, disable damage to test)
--- TODO
+-- 2025-12-25
 some more physics
 speed counter
 points counter

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"math"
 	"slices"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
@@ -23,6 +24,8 @@ const bIced uint64 = 1 << 2
 const bBooster uint64 = 1 << 3
 const bCanBeIced uint64 = 1 << 4
 const bEarnsPoints uint64 = 1 << 5
+const bDynamic uint64 = 1 << 6
+const bSolid uint64 = 1 << 7
 
 type Entity struct {
 	/* PHYSICS */
@@ -110,6 +113,20 @@ func aabbCollisionCheck(r1 rl.Rectangle, r2 rl.Rectangle) bool {
 	return r1.X+r1.Width > r2.X && r1.X < r2.X+r2.Width && r1.Y+r1.Height > r2.Y && r1.Y < r2.Y+r2.Height
 }
 
+func aabbCollision(r1 rl.Rectangle, r2 rl.Rectangle) rl.Rectangle {
+	if aabbCollisionCheck(r1, r2) {
+		x := max(r1.X-r2.X, r2.X-r1.X)
+		y := max(r1.Y-r2.Y, r2.Y-r1.Y)
+		return rl.Rectangle{
+			X:      x,
+			Y:      y,
+			Width:  min(r1.X+r1.Width-r2.X, r2.X+r2.Width-r1.X),
+			Height: min(r1.Y+r1.Height-r2.Y, r2.Y+r2.Height-r1.Y),
+		}
+	}
+	return rl.Rectangle{}
+}
+
 func YSort(a indexYPair, b indexYPair) int {
 	if a.y < b.y {
 		return -1
@@ -175,7 +192,7 @@ func draw(game Game) {
 	if showOverlay {
 		for i := range entitysMaxCount {
 			entity := game.entitys[i]
-			hitbox := getHitbox(entity)
+			hitbox := entity.getHitbox()
 			hitbox.X += float32(windowWidth)/2 - game.camera.x
 			hitbox.Y += float32(windowHeight)/2 - game.camera.y
 			rl.DrawRectangleRec(hitbox, color.RGBA{0, 0, 255, 255})
@@ -187,6 +204,7 @@ func draw(game Game) {
 
 const walking bool = false
 const showOverlay bool = false
+const sidewaysCollision bool = false
 
 func updateInput(input *Input) {
 	input.move = rl.Vector2{}
@@ -218,36 +236,97 @@ func getFirstEmptyEntity(entitys []Entity) *Entity {
 	return nil
 }
 
-func createObstacle(y float32) Entity {
+func addObstacle(y float32, entitys []Entity) bool {
 	x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
 	y += float32(rl.GetRandomValue(-300, 0))
-	entity := Entity{
-		x:         x,
-		y:         y,
-		width:     100,
-		height:    300,
-		hitbox:    rl.Rectangle{-50, -25 / 2, 100, 25},
-		behavior:  bExists | bCanBeIced,
-		hp:        1,
-		damage:    1,
-		animIndex: 2,
-		color:     color.RGBA{0, 255, 0, 255},
+	slot := getFirstEmptyEntity(entitys)
+	if slot != nil {
+		*slot = Entity{
+			x:         x,
+			y:         y,
+			width:     100,
+			height:    300,
+			hitbox:    rl.Rectangle{X: -50, Y: -25 / 2, Width: 100, Height: 25},
+			behavior:  bExists | bCanBeIced | bSolid,
+			hp:        1,
+			damage:    1,
+			animIndex: 2,
+			color:     color.RGBA{0, 255, 0, 255},
+		}
+		return true
 	}
-	return entity
+	return false
 }
 
-func createBarrier(x float32, y float32) Entity {
-	entity := Entity{
-		x:         x,
-		y:         y,
-		hp:        1, // TODO get rid of this once i fix the transparency debug thing
-		width:     50,
-		height:    50,
-		behavior:  bExists,
-		animIndex: 3,
-		color:     color.RGBA{0, 0, 0, 255},
+func addBooster(y float32, entitys []Entity) bool {
+	x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
+	y += float32(rl.GetRandomValue(-300, 0))
+	slot := getFirstEmptyEntity(entitys)
+	if slot != nil {
+		*slot = Entity{
+			x:         x,
+			y:         y,
+			width:     50,
+			height:    25,
+			hitbox:    rl.Rectangle{X: -25, Y: -25 / 2, Width: 50, Height: 25},
+			hp:        1,
+			animIndex: 3,
+			color:     color.RGBA{255, 255, 0, 255},
+			behavior:  bExists | bBooster,
+		}
+		return true
 	}
-	return entity
+	return false
+}
+
+func addBarriers(y float32, entitys []Entity) {
+	leftDone := false
+	for i := range entitys {
+		entity := &entitys[i]
+		if entity.behavior == 0 {
+			if !leftDone {
+				*entity = Entity{
+					x:         -hillWidth / 2,
+					y:         y,
+					hp:        1, // TODO get rid of this once i fix the transparency debug thing
+					width:     50,
+					height:    50,
+					behavior:  bExists,
+					animIndex: 3,
+					color:     color.RGBA{0, 0, 0, 255},
+				}
+				leftDone = true
+			} else {
+				*entity = Entity{
+					x:         hillWidth / 2,
+					y:         y,
+					hp:        1, // TODO get rid of this once i fix the transparency debug thing
+					width:     50,
+					height:    50,
+					behavior:  bExists,
+					animIndex: 3,
+					color:     color.RGBA{0, 0, 0, 255},
+				}
+				break
+			}
+		}
+	}
+}
+
+func addPlayer(entitys []Entity) {
+	entitys[entitysPlayerIndex] = Entity{
+		y:             startingHeight,
+		width:         float32(playerWidth),
+		height:        float32(playerWidth),
+		hitbox:        rl.Rectangle{X: -float32(playerWidth) / 2, Y: -25 / 2, Width: float32(playerWidth), Height: 25},
+		hp:            3,
+		damage:        3,
+		invulnTimeMax: 3,
+		wishSpeed:     500,
+		color:         color.RGBA{255, 0, 0, 255},
+		animIndex:     1,
+		behavior:      bExists | bEarnsPoints | bDynamic | bSolid,
+	}
 }
 
 func createEmpty() Entity {
@@ -255,20 +334,31 @@ func createEmpty() Entity {
 	return entity
 }
 
-func doDamage(entity *Entity, damage int32) {
+func (entity *Entity) addDamage(damage int32) {
 	entity.hp -= damage
 	// if entity.hp <= 0 {
 	// 	*entity = createEmpty()
 	// }
 }
 
-func getHitbox(entity Entity) rl.Rectangle {
+func (entity Entity) getHitbox() rl.Rectangle {
 	return rl.Rectangle{
 		X:      entity.x + entity.hitbox.X,
 		Y:      entity.y + entity.hitbox.Y,
 		Width:  entity.hitbox.Width,
 		Height: entity.hitbox.Height,
 	}
+}
+
+func abs(a float32) float32 {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
+func (entity Entity) hasBehavior(flags uint64) bool {
+	return (^entity.behavior & flags) == 0
 }
 
 func update(game *Game) {
@@ -299,20 +389,20 @@ func update(game *Game) {
 
 	/* BARRIERS */
 	if player.y-viewDistance <= game.lastBarrierY-barrierDistance {
-		slot := getFirstEmptyEntity(game.entitys[:])
-		*slot = createBarrier(-hillWidth/2, game.lastBarrierY-barrierDistance)
-		slot = getFirstEmptyEntity(game.entitys[:])
-		*slot = createBarrier(hillWidth/2, game.lastBarrierY-barrierDistance)
+		addBarriers(game.lastBarrierY-barrierDistance, game.entitys[:])
 		game.lastBarrierY -= barrierDistance
 	}
 
 	/* SPAWNING */
-	// TODO this only spawns one thing per frame, even if multiple are possible
-	if game.obstaclePoints > 50 {
-		slot := getFirstEmptyEntity(game.entitys[:entitysMaxCount])
-		if slot != nil {
-			*slot = createObstacle(player.y - viewDistance)
-			game.obstaclePoints -= 50
+	for game.obstaclePoints > 50 {
+		if rl.GetRandomValue(0, 9) == 0 {
+			if addBooster(player.y-viewDistance, game.entitys[:]) {
+				game.obstaclePoints -= 50
+			}
+		} else {
+			if addObstacle(player.y-viewDistance, game.entitys[:]) {
+				game.obstaclePoints -= 50
+			}
 		}
 	}
 
@@ -349,31 +439,63 @@ func update(game *Game) {
 	/* COLLISIONS */
 	for i1 := range entitysMaxCount {
 		e1 := &game.entitys[i1]
-		if e1.hp <= 0 {
+		if !e1.hasBehavior(bDynamic|bSolid) || e1.hp <= 0 {
 			continue
 		}
-		for i2 := i1 + 1; i2 < entitysMaxCount; i2++ {
+		for i2 := range entitysMaxCount {
+			if i1 == i2 {
+				continue
+			}
 			e2 := &game.entitys[i2]
 			if e2.hp <= 0 {
 				continue
 			}
-			// TODO resolve position as well, using the velocities to determine who moves and how far
-			/*
-				if e1 is dynamic, iterate over *all* other entities and resolve any collisions
-			*/
-			if aabbCollisionCheck(getHitbox(*e1), getHitbox(*e2)) {
-				if e1.invulnTime <= 0 {
-					doDamage(e1, e2.damage)
+			collision := aabbCollision(e1.getHitbox(), e2.getHitbox())
+			if collision.Width != 0 && collision.Height != 0 {
+				if e2.hasBehavior(bSolid) {
+					if sidewaysCollision {
+						timeX := collision.Width / abs(e1.vx-e2.vx)
+						timeY := collision.Height / abs(e1.vy-e2.vy)
+						if timeX < timeY {
+							displacement1 := -e1.vx / abs(e1.vx-e2.vx) * collision.Width
+							e1.x += displacement1
+							displacement2 := -e2.vx / abs(e2.vx-e1.vx) * collision.Width
+							e2.x += displacement2
+							e1.vx = rl.Clamp(-e1.vx, -100, 100)
+							e2.vx = rl.Clamp(-e2.vx, -100, 100)
+						} else {
+							displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
+							e1.y += displacement1
+							displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
+							e2.y += displacement2
+							e1.vy = rl.Clamp(-e1.vy, -100, 100)
+							e2.vy = rl.Clamp(-e2.vy, -100, 100)
+						}
+					}
+					displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
+					e1.y += displacement1
+					displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
+					e2.y += displacement2
+					e1.vy = rl.Clamp(-e1.vy, -100, 100)
+					e2.vy = rl.Clamp(-e2.vy, -100, 100)
+					if math.IsNaN(float64(e1.y)) || math.IsNaN(float64(e1.x)) {
+						panic("NaN position")
+					}
+				}
+				if e2.hasBehavior(bBooster) {
+					e1.wishSpeed += 100
+					e1.vy = -e1.wishSpeed
+				}
+
+				if e1.invulnTime <= 0 && e2.damage > 0 {
+					e1.addDamage(e2.damage)
 					e1.invulnTime = e1.invulnTimeMax
 				}
-				if e2.invulnTime <= 0 {
-					doDamage(e2, e1.damage)
+				if e2.invulnTime <= 0 && e1.damage > 0 {
+					e2.addDamage(e1.damage)
 					e2.invulnTime = e2.invulnTimeMax
 				}
-				e1.vx = rl.Clamp(-e1.vx, -100, 100)
-				e1.vy = rl.Clamp(-e1.vy, -100, 100)
-				e2.vx = rl.Clamp(-e2.vx, -100, 100)
-				e2.vy = rl.Clamp(-e2.vy, -100, 100)
+
 			}
 
 		}
@@ -389,27 +511,11 @@ func updateDraw(game *Game) {
 	draw(*game)
 }
 
-func createPlayer() Entity {
-	return Entity{
-		y:             startingHeight,
-		width:         float32(playerWidth),
-		height:        float32(playerWidth),
-		hitbox:        rl.Rectangle{-float32(playerWidth) / 2, -25 / 2, float32(playerWidth), 25},
-		hp:            3,
-		damage:        3,
-		invulnTimeMax: 3,
-		wishSpeed:     500,
-		color:         color.RGBA{255, 0, 0, 255},
-		animIndex:     1,
-		behavior:      bExists | bEarnsPoints,
-	}
-}
-
 func reset(game *Game) {
 	*game = Game{}
 	// game.playTime = rl.GetTime()
+	addPlayer(game.entitys[:])
 	player := &game.entitys[entitysPlayerIndex]
-	*player = createPlayer()
 	game.camera.x = player.x
 	game.camera.y = player.y + cameraFollowDistance
 
@@ -417,10 +523,7 @@ func reset(game *Game) {
 
 	y := player.y
 	for ; y > player.y-viewDistance; y -= barrierDistance {
-		slot := getFirstEmptyEntity(game.entitys[:])
-		*slot = createBarrier(-hillWidth/2, y)
-		slot = getFirstEmptyEntity(game.entitys[:])
-		*slot = createBarrier(hillWidth/2, y)
+		addBarriers(y, game.entitys[:])
 	}
 	game.lastBarrierY = y + barrierDistance
 }
