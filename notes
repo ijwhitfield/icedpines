@@ -1,13 +1,16 @@
 juice
 distance shader
-add game start screen
-add run end screen
+
 add other items
 dead skiers drop hp recoveries
 if you hit a skier with a snowball, they die
+-- TODO
+make skiers spawn by time instead of distance
+add game start screen
+add run end screen
+-- 2025-12-26
 press key to throw snowball
 add little guys that ski past you
--- TODO
 boost rectangle that makes you faster
 fix collisions (position resolution, disable damage to test)
 -- 2025-12-25

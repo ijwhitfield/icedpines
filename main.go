@@ -9,6 +9,20 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
+/*
+
+	only one scene
+	there's a menu layer that's either open or closed
+	the title is displayed above
+	there's two, new run, quit game
+
+	if menu is open and player is alive, pause time and don't simulate
+	if menu is open and player is dead, slowly roll camera forward
+	menu opens 3 seconds after player is dead
+	while menu is open, UI is not shown
+
+*/
+
 const windowWidth int32 = 600
 const windowHeight int32 = 800
 
@@ -77,6 +91,11 @@ type Game struct {
 	obstaclePoints float32
 	furthestY      float32
 	lastBarrierY   float32
+	deathTimer     Timer
+	skierTimer     Timer
+	menuSelection  int32
+	menuOpen       bool
+	quit           bool
 	camera         Camera
 	input          Input
 	entitys        [entitysMaxCount]Entity
@@ -85,7 +104,7 @@ type Game struct {
 func main() {
 	game := Game{}
 	initGame(&game)
-	for !rl.WindowShouldClose() {
+	for !rl.WindowShouldClose() && !game.quit {
 		updateDraw(&game)
 	}
 }
@@ -190,24 +209,33 @@ func draw(game Game) {
 			}
 		}
 	}
-
 	/* UI */
-	player := game.entitys[entitysPlayerIndex]
-	rl.DrawText(fmt.Sprintf("Altitude: %.0f", game.furthestY/100), 20, 20, 24, color.RGBA{0, 0, 0, 255})
-	rl.DrawText(fmt.Sprintf("Speed: %.0f", -player.vy), 20, 50, 24, color.RGBA{0, 0, 0, 255})
-	if player.y <= 0 {
-		rl.DrawText("YOU WIN", 20, windowHeight/2, 24, color.RGBA{0, 0, 0, 255})
-	}
-	// rl.DrawText("Points: 0", 20, 20, 24, color.RGBA{0, 0, 0, 255})
+	if game.menuOpen {
+		rl.DrawText("iced birds", 20, windowHeight/2, 24, color.RGBA{0, 0, 0, 255})
 
-	/* DEBUG OVERLAY */
-	if showOverlay {
-		for i := range entitysMaxCount {
-			entity := game.entitys[i]
-			hitbox := entity.getHitbox()
-			hitbox.X += float32(windowWidth)/2 - game.camera.x
-			hitbox.Y += float32(windowHeight)/2 - game.camera.y
-			rl.DrawRectangleRec(hitbox, color.RGBA{0, 0, 255, 255})
+		rl.DrawRectangleRec(rl.Rectangle{20, float32(windowHeight/2 + 30), 200, 24}, color.RGBA{175, 175, 175, 255})
+		rl.DrawText("new run", 20, windowHeight/2+30, 24, color.RGBA{0, 0, 0, 255})
+		rl.DrawRectangleRec(rl.Rectangle{20, float32(windowHeight/2 + 60), 200, 24}, color.RGBA{175, 175, 175, 255})
+		rl.DrawText("quit game", 20, windowHeight/2+60, 24, color.RGBA{0, 0, 0, 255})
+		rl.DrawRectangleRec(rl.Rectangle{240, float32(windowHeight/2 + (game.menuSelection+1)*30), 24, 24}, color.RGBA{0, 0, 0, 255})
+
+	} else {
+		player := game.entitys[entitysPlayerIndex]
+		rl.DrawText(fmt.Sprintf("Altitude: %.0f", game.furthestY/100), 20, 20, 24, color.RGBA{0, 0, 0, 255})
+		rl.DrawText(fmt.Sprintf("Speed: %.0f", -player.vy), 20, 50, 24, color.RGBA{0, 0, 0, 255})
+		if player.y <= 0 {
+			rl.DrawText("YOU WIN", 20, windowHeight/2, 24, color.RGBA{0, 0, 0, 255})
+		}
+
+		/* DEBUG OVERLAY */
+		if showOverlay {
+			for i := range entitysMaxCount {
+				entity := game.entitys[i]
+				hitbox := entity.getHitbox()
+				hitbox.X += float32(windowWidth)/2 - game.camera.x
+				hitbox.Y += float32(windowHeight)/2 - game.camera.y
+				rl.DrawRectangleRec(hitbox, color.RGBA{0, 0, 255, 255})
+			}
 		}
 	}
 
@@ -220,13 +248,11 @@ const sidewaysCollision bool = false
 
 func updateInput(input *Input) {
 	input.move = rl.Vector2{}
-	if walking {
-		if rl.IsKeyDown(rl.KeyUp) {
-			input.move.Y += -1.0
-		}
-		if rl.IsKeyDown(rl.KeyDown) {
-			input.move.Y += 1.0
-		}
+	if rl.IsKeyDown(rl.KeyUp) {
+		input.move.Y += -1.0
+	}
+	if rl.IsKeyDown(rl.KeyDown) {
+		input.move.Y += 1.0
 	}
 	if rl.IsKeyDown(rl.KeyLeft) {
 		input.move.X += -1.0
@@ -400,165 +426,207 @@ func (entity Entity) hasBehavior(flags uint64) bool {
 }
 
 const skierAcceleration float32 = 1000
+const cameraScrollSpeed float32 = 300
 
 func update(game *Game) {
-	/* CONVENIENCE VARS */
-	player := &game.entitys[entitysPlayerIndex]
-
-	/* TIME */
 	frameTime := rl.GetFrameTime()
-	game.playTime += float64(rl.GetFrameTime())
-
-	/* INPUTS */
+	player := &game.entitys[entitysPlayerIndex]
 	updateInput(&game.input)
-	// TODO actually pause instead of reset
-	if game.input.pause {
-		reset(game)
+	player.attackTimer.time -= frameTime
+	game.deathTimer.time -= frameTime
+	game.skierTimer.time -= frameTime
+
+	if game.input.pause && (player.hp > 0 || game.deathTimer.time > 0) {
+		game.menuOpen = !game.menuOpen
+	}
+	if game.deathTimer.time <= 0 && player.hp <= 0 {
+		game.menuOpen = true
 	}
 
-	if game.input.snowball && player.attackTimer.time <= 0 {
-		if addSnowball(player.x, player.y-50, game.entitys[:]) {
-			player.attackTimer.reset()
+	if !(game.menuOpen && player.hp > 0) {
+		game.playTime += float64(frameTime)
+		if game.input.snowball && player.attackTimer.time <= 0 {
+			if addSnowball(player.x, player.y-50, game.entitys[:]) {
+				player.attackTimer.reset()
+			}
 		}
-	}
 
-	/* PLAYER MOVEMENT */
-	if player.hp > 0 {
-		player.vx = game.input.move.X * player.wishSpeed * 2
-		if walking {
-			player.vy = game.input.move.Y * 100
+		/* PLAYER MOVEMENT */
+		if player.hp > 0 {
+			if game.input.move.X > 0 {
+				player.vx = player.wishSpeed * 2
+			} else if game.input.move.X < 0 {
+				player.vx = -player.wishSpeed * 2
+			} else {
+				player.vx = 0
+			}
+			if walking {
+				player.vy = game.input.move.Y * 100
+			} else {
+				player.vy -= playerAcceleration * frameTime
+				player.vy = max(player.vy, -player.wishSpeed)
+			}
 		} else {
-			player.vy -= playerAcceleration * frameTime
-			player.vy = max(player.vy, -player.wishSpeed)
+			player.vy *= 1 - 0.5*frameTime
+			player.vx *= 1 - 0.5*frameTime
 		}
-	} else {
-		player.vy *= 1 - 0.5*frameTime
-		player.vx *= 1 - 0.5*frameTime
-	}
 
-	/* BARRIERS */
-	if player.y-viewDistance <= game.lastBarrierY-barrierDistance {
-		addBarriers(game.lastBarrierY-barrierDistance, game.entitys[:])
-		game.lastBarrierY -= barrierDistance
-	}
-
-	/* SPAWNING */
-	for game.obstaclePoints > 50 {
-		if addObstacle(player.y-viewDistance, game.entitys[:]) {
-			game.obstaclePoints -= 50
+		/* BARRIERS */
+		if game.camera.y-viewDistance <= game.lastBarrierY-barrierDistance {
+			addBarriers(game.lastBarrierY-barrierDistance, game.entitys[:])
+			game.lastBarrierY -= barrierDistance
 		}
-	}
-	for game.skierPoints > 1000 {
-		if addSkier(player.y+150, game.entitys[:]) {
-			game.skierPoints -= 1000
+
+		/* SPAWNING */
+		for game.obstaclePoints > 50 {
+			if addObstacle(game.camera.y-viewDistance, game.entitys[:]) {
+				game.obstaclePoints -= 50
+			}
 		}
-	}
+		if game.skierTimer.time <= 0 {
+			if addSkier(game.camera.y, game.entitys[:]) {
+				game.skierTimer.reset()
+			}
+		}
 
-	/* BASIC LOOP */
-	for i := range entitysMaxCount {
-		entity := &game.entitys[i]
+		/* BASIC LOOP */
+		for i := range entitysMaxCount {
+			entity := &game.entitys[i]
 
-		/* MOVE */
-		entity.y += entity.vy * frameTime
-		entity.x += entity.vx * frameTime
-		if entity.behavior&bEarnsPoints != 0 {
-			entity.x = min(entity.x, hillWidth/2-float32(playerWidth))
-			entity.x = max(entity.x, -hillWidth/2+float32(playerWidth))
-			if entity.y < game.furthestY {
-				pointsAdded := game.furthestY - entity.y
-				game.furthestY = entity.y
-				game.skierPoints += pointsAdded
-				game.obstaclePoints += pointsAdded
+			/* MOVE */
+			entity.y += entity.vy * frameTime
+			entity.x += entity.vx * frameTime
+			if entity.behavior&bEarnsPoints != 0 {
+				entity.x = min(entity.x, hillWidth/2-float32(playerWidth))
+				entity.x = max(entity.x, -hillWidth/2+float32(playerWidth))
 				entity.wishSpeed += max(0, -entity.vy*frameTime) / 100
 			}
-		}
-		if entity.hasBehavior(bSkier) {
-			if entity.x < 0 {
-				entity.vx += skierAcceleration * frameTime
-			} else {
-				entity.vx -= skierAcceleration * frameTime
+			if entity.hasBehavior(bSkier) {
+				if entity.x < 0 {
+					entity.vx += skierAcceleration * frameTime
+				} else {
+					entity.vx -= skierAcceleration * frameTime
+				}
 			}
+
+			/* DESPAWN */
+			if (entity.y > game.camera.y+50 || entity.y < game.camera.y-3000) && i != entitysPlayerIndex {
+				*entity = createEmpty()
+			}
+
+			entity.invulnTimer.time -= frameTime
+
 		}
 
-		/* DESPAWN */
-		if entity.y > game.camera.y+50 || entity.y < game.camera.y-3000 {
-			*entity = createEmpty()
-		}
-
-		entity.invulnTimer.time -= frameTime
-
-	}
-
-	/* COLLISIONS */
-	for i1 := range entitysMaxCount {
-		e1 := &game.entitys[i1]
-		if !e1.hasBehavior(bDynamic|bSolid) || e1.hp <= 0 {
-			continue
-		}
-		for i2 := range entitysMaxCount {
-			if i1 == i2 {
+		/* COLLISIONS */
+		for i1 := range entitysMaxCount {
+			e1 := &game.entitys[i1]
+			if !e1.hasBehavior(bDynamic|bSolid) || e1.hp <= 0 {
 				continue
 			}
-			e2 := &game.entitys[i2]
-			if e2.hp <= 0 {
-				continue
-			}
-			collision := aabbCollision(e1.getHitbox(), e2.getHitbox())
-			if collision.Width != 0 && collision.Height != 0 {
-				if e1.hasBehavior(bCausesIce) && e2.hasBehavior(bCanBeIced) {
-					e2.behavior |= bIced
+			for i2 := range entitysMaxCount {
+				if i1 == i2 {
+					continue
 				}
-				if e2.hasBehavior(bCausesIce) && e1.hasBehavior(bCanBeIced) {
-					e1.behavior |= bIced
+				e2 := &game.entitys[i2]
+				if e2.hp <= 0 {
+					continue
 				}
-				if e2.hasBehavior(bSolid) {
-					if sidewaysCollision {
-						timeX := collision.Width / abs(e1.vx-e2.vx)
-						timeY := collision.Height / abs(e1.vy-e2.vy)
-						if timeX < timeY {
-							displacement1 := -e1.vx / abs(e1.vx-e2.vx) * collision.Width
-							e1.x += displacement1
-							displacement2 := -e2.vx / abs(e2.vx-e1.vx) * collision.Width
-							e2.x += displacement2
-							e1.vx = rl.Clamp(-e1.vx, -100, 100)
-							e2.vx = rl.Clamp(-e2.vx, -100, 100)
-						} else {
-							displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
-							e1.y += displacement1
-							displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
-							e2.y += displacement2
-							e1.vy = rl.Clamp(-e1.vy, -100, 100)
-							e2.vy = rl.Clamp(-e2.vy, -100, 100)
+				collision := aabbCollision(e1.getHitbox(), e2.getHitbox())
+				if collision.Width != 0 && collision.Height != 0 {
+					if e1.hasBehavior(bCausesIce) && e2.hasBehavior(bCanBeIced) {
+						e2.behavior |= bIced
+					}
+					if e2.hasBehavior(bCausesIce) && e1.hasBehavior(bCanBeIced) {
+						e1.behavior |= bIced
+					}
+					if e2.hasBehavior(bSolid) {
+						if sidewaysCollision {
+							timeX := collision.Width / abs(e1.vx-e2.vx)
+							timeY := collision.Height / abs(e1.vy-e2.vy)
+							if timeX < timeY {
+								displacement1 := -e1.vx / abs(e1.vx-e2.vx) * collision.Width
+								e1.x += displacement1
+								displacement2 := -e2.vx / abs(e2.vx-e1.vx) * collision.Width
+								e2.x += displacement2
+								e1.vx = rl.Clamp(-e1.vx, -100, 100)
+								e2.vx = rl.Clamp(-e2.vx, -100, 100)
+							} else {
+								displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
+								e1.y += displacement1
+								displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
+								e2.y += displacement2
+								e1.vy = rl.Clamp(-e1.vy, -100, 100)
+								e2.vy = rl.Clamp(-e2.vy, -100, 100)
+							}
+						}
+						displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
+						e1.y += displacement1
+						displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
+						e2.y += displacement2
+						e1.vy = rl.Clamp(-e1.vy, -100, 100)
+						e2.vy = rl.Clamp(-e2.vy, -100, 100)
+						if math.IsNaN(float64(e1.y)) || math.IsNaN(float64(e1.x)) {
+							panic("NaN position")
 						}
 					}
-					displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
-					e1.y += displacement1
-					displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
-					e2.y += displacement2
-					e1.vy = rl.Clamp(-e1.vy, -100, 100)
-					e2.vy = rl.Clamp(-e2.vy, -100, 100)
-					if math.IsNaN(float64(e1.y)) || math.IsNaN(float64(e1.x)) {
-						panic("NaN position")
-					}
-				}
 
-				if e1.invulnTimer.time <= 0 && e2.damage > 0 {
-					e1.addDamage(e2.damage)
-					e1.invulnTimer.reset()
-				}
-				if e2.invulnTimer.time <= 0 && e1.damage > 0 {
-					e2.addDamage(e1.damage)
-					e2.invulnTimer.reset()
+					if e1.invulnTimer.time <= 0 && e2.damage > 0 {
+						e1.addDamage(e2.damage)
+						if e1.hp > 0 {
+							e1.invulnTimer.reset()
+						}
+						if e1 == player && player.hp <= 0 {
+							game.deathTimer.reset()
+						}
+					}
+					if e2.invulnTimer.time <= 0 && e1.damage > 0 {
+						e2.addDamage(e1.damage)
+						if e2.hp > 0 {
+							e2.invulnTimer.reset()
+						}
+						if e1 == player && player.hp <= 0 {
+							game.deathTimer.reset()
+						}
+					}
+
 				}
 
 			}
 
+			/* CAMERA */
+			// game.camera.x = game.entitys[entitysPlayerIndex].x
+			// game.camera.y = game.entitys[entitysPlayerIndex].y + cameraFollowDistance
 		}
 	}
+	if player.hp > 0 || (player.hp <= 0 && game.deathTimer.time > 0) {
+		game.camera.x = game.entitys[entitysPlayerIndex].x
+		game.camera.y = game.entitys[entitysPlayerIndex].y + cameraFollowDistance
+	} else if player.hp <= 0 && game.deathTimer.time <= 0 {
+		game.camera.x = 0
+		game.camera.y += -cameraScrollSpeed * frameTime
+	}
+	if game.camera.y < game.furthestY {
+		pointsAdded := game.furthestY - game.camera.y
+		game.furthestY = game.camera.y
+		game.skierPoints += pointsAdded
+		game.obstaclePoints += pointsAdded
 
-	/* CAMERA */
-	game.camera.x = game.entitys[entitysPlayerIndex].x
-	game.camera.y = game.entitys[entitysPlayerIndex].y + cameraFollowDistance
+	}
+	if game.menuOpen {
+		if game.input.move.Y > 0 {
+			game.menuSelection = min(1, game.menuSelection+1)
+		} else if game.input.move.Y < 0 {
+			game.menuSelection = max(0, game.menuSelection-1)
+		}
+		if game.input.snowball {
+			if game.menuSelection == 0 {
+				reset(game)
+			} else if game.menuSelection == 1 {
+				game.quit = true
+			}
+		}
+	}
 }
 
 func updateDraw(game *Game) {
@@ -573,7 +641,8 @@ func reset(game *Game) {
 	player := &game.entitys[entitysPlayerIndex]
 	game.camera.x = player.x
 	game.camera.y = player.y + cameraFollowDistance
-
+	game.deathTimer.max = 3
+	game.skierTimer.max = 2
 	game.furthestY = startingHeight
 
 	y := player.y
@@ -585,8 +654,12 @@ func reset(game *Game) {
 
 func initGame(game *Game) {
 	reset(game)
+	player := &game.entitys[entitysPlayerIndex]
+	player.hp = 0
+	game.camera.y -= cameraFollowDistance
+	game.menuOpen = true
 
-	rl.InitWindow(windowWidth, windowHeight, "iced pines")
+	rl.InitWindow(windowWidth, windowHeight, "iced birds")
 	rl.SetExitKey(0)
 	rl.SetTargetFPS(60)
 }
