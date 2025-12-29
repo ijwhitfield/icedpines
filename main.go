@@ -41,7 +41,7 @@ const rightAnimIndex int32 = 2
 const deadAnimIndex int32 = 3
 
 func loadResources() {
-	runes := []rune("-abcdefghijklmnopqrstuvwxyz:0123456789")
+	runes := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.?-:")
 	resources.font = rl.LoadFontEx("resources/Snowstorm Black.otf", 48, runes, int32(len(runes)))
 	resources.penguin = [3]AnimSource(makeAnimSources([]string{"resources/penguinLeft.png", "resources/penguinCenter.png", "resources/penguinRight.png"}))
 	resources.bear = [3]AnimSource(makeAnimSources([]string{"resources/bearLeft.png", "resources/bearCenter.png", "resources/bearRight.png"}))
@@ -69,6 +69,8 @@ const bEarnsPoints uint64 = 1 << 5
 const bDynamic uint64 = 1 << 6
 const bSolid uint64 = 1 << 7
 const bCausesIce uint64 = 1 << 8
+const bDropsItem uint64 = 1 << 9
+const bExplodesOnDeath uint64 = 1 << 10
 
 type Timer struct {
 	time float32
@@ -111,6 +113,15 @@ type Input struct {
 	item     bool
 }
 
+const itemHealthUp int32 = 0
+const itemAttackSpeedUp int32 = 1
+const itemPierceUp int32 = 2
+const itemInvincibility int32 = 3
+const itemBoost int32 = 4
+const itemShield int32 = 5
+const itemBombs int32 = 6
+const itemCount int32 = 6
+
 type Game struct {
 	playTime             float64
 	skierPoints          float32
@@ -120,6 +131,8 @@ type Game struct {
 	lastBarrierY         float32
 	deathTimer           Timer
 	skierTimer           Timer
+	itemTimer            Timer
+	itemCollected        int32
 	menuSelection        int32
 	menuOpen             bool
 	quit                 bool
@@ -261,8 +274,6 @@ func draw(game Game) {
 			}
 			postProjection, visible := cameraProjectRectangle(game.camera, preProjection)
 			if visible {
-				// texture := animGetTexture(entity.animIndex, entity.animStartTime)
-				// rl.DrawTexturePro(texture, src, postProjection, origin, 0, color.White.RGBA())
 				if entity.invulnTimer.time > 0 && int32(entity.invulnTimer.time*5)%2 == 0 {
 					continue
 				}
@@ -275,12 +286,12 @@ func draw(game Game) {
 				if entity.hasBehavior(bIced) {
 					rl.DrawRectangleRec(postProjection, color.RGBA{0, 255, 255, 100})
 				}
-				// rl.DrawRectangleRec(postProjection, color)
 			}
 		}
 	}
 	/* UI */
 	if game.menuOpen {
+		rl.DrawRectangleRec(rl.Rectangle{X: 0, Y: float32(windowHeight/2 - 4), Width: 224, Height: 92}, rl.White)
 		drawText("iced birds", 24, float32(windowHeight/2))
 
 		rl.DrawRectangleRec(rl.Rectangle{X: 20, Y: float32(windowHeight/2 + 30), Width: 200, Height: 24}, color.RGBA{175, 175, 175, 255})
@@ -293,6 +304,19 @@ func draw(game Game) {
 		player := game.entitys[entitysPlayerIndex]
 		drawText(fmt.Sprintf("altitude: %d", int32(game.furthestY/100)), 24, 20)
 		drawText(fmt.Sprintf("speed: %d", int32(-player.vy)), 24, 50)
+		for i := range player.hp {
+			drawTexture(resources.heart[0].texture, rl.Rectangle{X: float32(windowWidth - (i+1)*30), Y: 20, Width: 25, Height: 25})
+		}
+
+		if game.itemTimer.time > 0 {
+			itemText := "Unknown item collected"
+			switch game.itemCollected {
+			case itemHealthUp:
+				itemText = "Health Up!"
+			}
+			textWidth := rl.MeasureTextEx(resources.font, itemText, 24, 2).X
+			drawText(itemText, float32(windowWidth/2)-textWidth/2, 100)
+		}
 
 		if player.y <= 0 {
 			drawText("you win", 24, float32(windowHeight/2))
@@ -359,7 +383,7 @@ func addObstacle(y float32, entitys []Entity) bool {
 			width:    200,
 			height:   400,
 			hitbox:   rl.Rectangle{X: -50, Y: -25 / 2, Width: 100, Height: 25},
-			behavior: bExists | bCanBeIced | bSolid,
+			behavior: bExists | bCanBeIced | bSolid | bExplodesOnDeath,
 			hp:       1,
 			damage:   1,
 			anim:     AnimState{sources: resources.trees[:], activeIndex: treeIndex},
@@ -412,8 +436,9 @@ func addSkier(y float32, entitys []Entity) bool {
 			vx:       vx,
 			hitbox:   rl.Rectangle{X: -25, Y: -25, Width: 50, Height: 50},
 			hp:       1,
+			damage:   1,
 			anim:     AnimState{sources: resources.penguin[:]},
-			behavior: bExists | bSkier | bCanBeIced,
+			behavior: bExists | bSkier | bCanBeIced | bDropsItem | bExplodesOnDeath,
 		}
 		return true
 	}
@@ -434,7 +459,7 @@ func addSnowball(x float32, y float32, vy float32, entitys []Entity) bool {
 			hitbox:   rl.Rectangle{X: -25, Y: -25, Width: 50, Height: 50},
 			hp:       1,
 			anim:     AnimState{sources: resources.snowball[:]},
-			behavior: bExists | bDynamic | bSolid | bCausesIce,
+			behavior: bExists | bDynamic | bSolid | bCausesIce | bExplodesOnDeath,
 		}
 		return true
 	}
@@ -498,8 +523,6 @@ func (entity *Entity) addDamage(damage int32) {
 	entity.hp -= damage
 	if entity.hp > 0 {
 		entity.invulnTimer.reset()
-	} else {
-		entity.anim.activeIndex = deadAnimIndex
 	}
 	// if entity.hp <= 0 {
 	// 	*entity = createEmpty()
@@ -526,16 +549,55 @@ func (entity Entity) hasBehavior(flags uint64) bool {
 	return (^entity.behavior & flags) == 0
 }
 
+func tryIce(e1 *Entity, e2 *Entity) {
+	if e1.hasBehavior(bCausesIce) && e2.hasBehavior(bCanBeIced) {
+		e2.behavior |= bIced
+		e1.addDamage(e2.damage)
+		//*e1 = createEmpty()
+	}
+}
+
+func tryDamage(e1 *Entity, e2 *Entity) {
+	if e1.invulnTimer.time <= 0 && e2.damage > 0 && !e2.hasBehavior(bIced) {
+		e1.addDamage(e2.damage)
+		e1.wishSpeed *= 0.75
+	}
+}
+
+/* returns which item was given */
+func (entity *Entity) giveRandomItem() int32 {
+	item := itemHealthUp
+	switch item {
+	case itemHealthUp:
+		entity.hp += 1
+	}
+	return item
+}
+
+func tryDeath(entity *Entity) {
+	if entity.hp <= 0 {
+		if entity.hasBehavior(bExplodesOnDeath) {
+			// TODO place particles
+			*entity = createEmpty()
+		} else {
+			entity.anim.activeIndex = deadAnimIndex
+		}
+	}
+}
+
 const skierAcceleration float32 = 1000
 const cameraScrollSpeed float32 = 300
 
 func update(game *Game) {
-	frameTime := rl.GetFrameTime()
+	// we always hit 60fps, actually getting frame time only causes crazy stuff to happen on stalls
+	// frameTime := rl.GetFrameTime()
+	frameTime := float32(1.0 / 60.0)
 	player := &game.entitys[entitysPlayerIndex]
 	updateInput(&game.input)
 	player.attackTimer.time -= frameTime
 	game.deathTimer.time -= frameTime
 	game.skierTimer.time -= frameTime
+	game.itemTimer.time -= frameTime
 
 	if game.input.pause && (player.hp > 0 || game.deathTimer.time > 0) {
 		game.menuOpen = !game.menuOpen
@@ -662,34 +724,10 @@ func update(game *Game) {
 				}
 				collision := aabbCollision(e1.getHitbox(), e2.getHitbox())
 				if collision.Width != 0 && collision.Height != 0 {
-					if e1.hasBehavior(bCausesIce) && e2.hasBehavior(bCanBeIced) {
-						e2.behavior |= bIced
-						*e1 = createEmpty()
-					}
-					if e2.hasBehavior(bCausesIce) && e1.hasBehavior(bCanBeIced) {
-						e1.behavior |= bIced
-						*e2 = createEmpty()
-					}
+					tryIce(e1, e2)
+					tryIce(e2, e1)
+
 					if e2.hasBehavior(bSolid) && !e2.hasBehavior(bIced) {
-						if sidewaysCollision {
-							timeX := collision.Width / abs(e1.vx-e2.vx)
-							timeY := collision.Height / abs(e1.vy-e2.vy)
-							if timeX < timeY {
-								displacement1 := -e1.vx / abs(e1.vx-e2.vx) * collision.Width
-								e1.x += displacement1
-								displacement2 := -e2.vx / abs(e2.vx-e1.vx) * collision.Width
-								e2.x += displacement2
-								e1.vx = rl.Clamp(-e1.vx, -100, 100)
-								e2.vx = rl.Clamp(-e2.vx, -100, 100)
-							} else {
-								displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
-								e1.y += displacement1
-								displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
-								e2.y += displacement2
-								e1.vy = rl.Clamp(-e1.vy, -100, 100)
-								e2.vy = rl.Clamp(-e2.vy, -100, 100)
-							}
-						}
 						displacement1 := -e1.vy / abs(e1.vy-e2.vy) * collision.Height
 						e1.y += displacement1
 						displacement2 := -e2.vy / abs(e2.vy-e1.vy) * collision.Height
@@ -701,27 +739,22 @@ func update(game *Game) {
 						}
 					}
 
-					if e1.invulnTimer.time <= 0 && e2.damage > 0 && !e2.hasBehavior(bIced) {
-						e1.addDamage(e2.damage)
-						if e1 == player {
-							e1.wishSpeed *= 0.75
-							if player.hp <= 0 {
-								game.deathTimer.reset()
-							}
-						}
+					tryDamage(e1, e2)
+					tryDamage(e2, e1)
+					if (e1 == player || e2 == player) && player.hp <= 0 {
+						game.deathTimer.reset()
 					}
-					if e2.invulnTimer.time <= 0 && e1.damage > 0 && !e1.hasBehavior(bIced) {
-						e2.addDamage(e1.damage)
-						if e2 == player {
-							e2.wishSpeed *= 0.75
-							if player.hp <= 0 {
-								game.deathTimer.reset()
-							}
-						}
+					if e1.hasBehavior(bDropsItem) && e1.hp <= 0 {
+						game.itemCollected = player.giveRandomItem()
+						game.itemTimer.reset()
 					}
-
+					if e2.hasBehavior(bDropsItem) && e2.hp <= 0 {
+						game.itemCollected = player.giveRandomItem()
+						game.itemTimer.reset()
+					}
+					tryDeath(e1)
+					tryDeath(e2)
 				}
-
 			}
 		}
 	}
@@ -771,6 +804,7 @@ func reset(game *Game) {
 	game.camera.y = player.y + cameraFollowDistance
 	game.deathTimer.max = 3
 	game.skierTimer.max = 2
+	game.itemTimer.max = 1
 	game.furthestY = startingHeight
 
 	y := player.y
