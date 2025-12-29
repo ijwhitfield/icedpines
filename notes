@@ -1,10 +1,18 @@
 juice
+	camera movement
+	particles
 distance shader
 
 add other items
 dead skiers drop hp recoveries
-if you hit a skier with a snowball, they die
+show hp ui
 -- TODO
+if you hit a skier with a snowball, they die
+all combat
+placeholder color
+-- 2025-12-28
+texturing
+-- 2025-12-27
 make skiers spawn by time instead of distance
 add game start screen
 add run end screen
