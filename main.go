@@ -4,29 +4,18 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-/*
-
-	only one scene
-	there's a menu layer that's either open or closed
-	the title is displayed above
-	there's two, new run, quit game
-
-	if menu is open and player is alive, pause time and don't simulate
-	if menu is open and player is dead, slowly roll camera forward
-	menu opens 3 seconds after player is dead
-	while menu is open, UI is not shown
-
-*/
-
 type Resources struct {
+	dir      string
 	font     rl.Font
 	penguin  [3]AnimSource
-	bear     [3]AnimSource
+	bear     [10]AnimSource
 	pole     [1]AnimSource
 	trees    [2]AnimSource
 	snowball [1]AnimSource
@@ -39,16 +28,35 @@ const leftAnimIndex int32 = 0
 const centerAnimIndex int32 = 1
 const rightAnimIndex int32 = 2
 const deadAnimIndex int32 = 3
+const leftGrabAnimIndex int32 = 4
+const leftThrowAnimIndex int32 = 5
+const centerGrabAnimIndex int32 = 6
+const centerThrowAnimIndex int32 = 7
+const rightGrabAnimIndex int32 = 8
+const rightThrowAnimIndex int32 = 9
 
 func loadResources() {
+	resources.dir, _ = filepath.Abs(filepath.Dir(os.Args[0]))
+	resources.dir += "/resources/"
 	runes := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.?-:")
-	resources.font = rl.LoadFontEx("resources/Snowstorm Black.otf", 48, runes, int32(len(runes)))
-	resources.penguin = [3]AnimSource(makeAnimSources([]string{"resources/penguinLeft.png", "resources/penguinCenter.png", "resources/penguinRight.png"}))
-	resources.bear = [3]AnimSource(makeAnimSources([]string{"resources/bearLeft.png", "resources/bearCenter.png", "resources/bearRight.png"}))
-	resources.pole = [1]AnimSource(makeAnimSources([]string{"resources/pole.png"}))
-	resources.trees = [2]AnimSource(makeAnimSources([]string{"resources/tree1.png", "resources/tree2.png"}))
-	resources.snowball = [1]AnimSource(makeAnimSources([]string{"resources/snowball.png"}))
-	resources.heart = [1]AnimSource(makeAnimSources([]string{"resources/heart.png"}))
+	resources.font = rl.LoadFontEx(fmt.Sprint(resources.dir, "/Snowstorm Black.otf"), 48, runes, int32(len(runes)))
+	resources.penguin = [3]AnimSource(makeAnimSources([]string{"penguinLeft.png", "penguinCenter.png", "penguinRight.png"}))
+	resources.bear = [10]AnimSource(makeAnimSources([]string{
+		"bearLeft.png",
+		"bearCenter.png",
+		"bearRight.png",
+		"bearDead.png",
+		"bearLeftGrab.png",
+		"bearLeftThrow.png",
+		"bearCenterGrab.png",
+		"bearCenterThrow.png",
+		"bearRightGrab.png",
+		"bearRightThrow.png",
+	}))
+	resources.pole = [1]AnimSource(makeAnimSources([]string{"pole.png"}))
+	resources.trees = [2]AnimSource(makeAnimSources([]string{"tree1.png", "tree2.png"}))
+	resources.snowball = [1]AnimSource(makeAnimSources([]string{"snowball.png"}))
+	resources.heart = [1]AnimSource(makeAnimSources([]string{"heart.png"}))
 }
 
 const windowWidth int32 = 600
@@ -90,13 +98,14 @@ type Entity struct {
 
 	/* GAMEPLAY */
 	behavior    uint64
-	hp          int32
+	hp, hpMax   int32
 	damage      int32
 	wishSpeed   float32
 	centerX     float32 // center of where a skier wants to be
 	hitbox      rl.Rectangle
 	attackTimer Timer
 	invulnTimer Timer
+	boostTimer  Timer
 
 	/* ANIMATIONS */
 	anim AnimState
@@ -107,20 +116,13 @@ type Camera struct {
 }
 
 type Input struct {
-	move     rl.Vector2
-	pause    bool
-	snowball bool
-	item     bool
+	move   rl.Vector2
+	pause  bool
+	action bool
 }
 
-const itemHealthUp int32 = 0
-const itemAttackSpeedUp int32 = 1
-const itemPierceUp int32 = 2
-const itemInvincibility int32 = 3
-const itemBoost int32 = 4
-const itemShield int32 = 5
-const itemBombs int32 = 6
-const itemCount int32 = 6
+const itemHealth int32 = 0
+const itemBoost int32 = 1
 
 type Game struct {
 	playTime             float64
@@ -131,11 +133,12 @@ type Game struct {
 	lastBarrierY         float32
 	deathTimer           Timer
 	skierTimer           Timer
-	itemTimer            Timer
-	itemCollected        int32
+	notificationTimer    Timer
+	notificationText     string
 	menuSelection        int32
 	menuOpen             bool
 	quit                 bool
+	finished             bool
 	camera               Camera
 	input                Input
 	entitys              [entitysMaxCount]Entity
@@ -154,7 +157,7 @@ const viewDistance float32 = 2000
 const hillWidth float32 = 2000
 const barrierDistance float32 = 100
 const cameraFollowDistance float32 = 150
-const startingHeight float32 = 100000
+const startingHeight float32 = 300000
 
 func cameraProjectRectangle(camera Camera, input rl.Rectangle) (rl.Rectangle, bool) {
 	output := rl.Rectangle{}
@@ -232,6 +235,7 @@ type AnimSource struct {
 func makeAnimSources(filenames []string) []AnimSource {
 	sources := make([]AnimSource, len(filenames))
 	for i, filename := range filenames {
+		filename = fmt.Sprint(resources.dir, filename)
 		texture := rl.LoadTexture(filename)
 		source := AnimSource{
 			texture:      texture,
@@ -303,23 +307,14 @@ func draw(game Game) {
 	} else {
 		player := game.entitys[entitysPlayerIndex]
 		drawText(fmt.Sprintf("altitude: %d", int32(game.furthestY/100)), 24, 20)
-		drawText(fmt.Sprintf("speed: %d", int32(-player.vy)), 24, 50)
+		drawText(fmt.Sprintf("speed: %d", int32(-player.vy)/10), 24, 50)
 		for i := range player.hp {
 			drawTexture(resources.heart[0].texture, rl.Rectangle{X: float32(windowWidth - (i+1)*30), Y: 20, Width: 25, Height: 25})
 		}
 
-		if game.itemTimer.time > 0 {
-			itemText := "Unknown item collected"
-			switch game.itemCollected {
-			case itemHealthUp:
-				itemText = "Health Up!"
-			}
-			textWidth := rl.MeasureTextEx(resources.font, itemText, 24, 2).X
-			drawText(itemText, float32(windowWidth/2)-textWidth/2, 100)
-		}
-
-		if player.y <= 0 {
-			drawText("you win", 24, float32(windowHeight/2))
+		if game.notificationTimer.time > 0 {
+			textWidth := rl.MeasureTextEx(resources.font, game.notificationText, 24, 2).X
+			drawText(game.notificationText, float32(windowWidth/2)-textWidth/2, 100)
 		}
 
 		/* DEBUG OVERLAY */
@@ -343,22 +338,21 @@ const sidewaysCollision bool = false
 
 func updateInput(input *Input) {
 	input.move = rl.Vector2{}
-	if rl.IsKeyDown(rl.KeyUp) {
+	if rl.IsKeyDown(rl.KeyUp) || rl.IsKeyDown(rl.KeyW) {
 		input.move.Y += -1.0
 	}
-	if rl.IsKeyDown(rl.KeyDown) {
+	if rl.IsKeyDown(rl.KeyDown) || rl.IsKeyDown(rl.KeyS) {
 		input.move.Y += 1.0
 	}
-	if rl.IsKeyDown(rl.KeyLeft) {
+	if rl.IsKeyDown(rl.KeyLeft) || rl.IsKeyDown(rl.KeyA) {
 		input.move.X += -1.0
 	}
-	if rl.IsKeyDown(rl.KeyRight) {
+	if rl.IsKeyDown(rl.KeyRight) || rl.IsKeyDown(rl.KeyD) {
 		input.move.X += 1.0
 	}
 	input.move = rl.Vector2Normalize(input.move)
 	input.pause = rl.IsKeyPressed(rl.KeyEscape)
-	input.snowball = rl.IsKeyPressed(rl.KeyX)
-	input.item = rl.IsKeyPressed(rl.KeyZ)
+	input.action = rl.IsKeyPressed(rl.KeySpace) || rl.IsKeyPressed(rl.KeyEnter) || rl.IsKeyPressed(rl.KeyZ) || rl.IsKeyPressed(rl.KeyX)
 }
 
 func getFirstEmptyEntity(entitys []Entity) *Entity {
@@ -372,14 +366,18 @@ func getFirstEmptyEntity(entitys []Entity) *Entity {
 }
 
 func addObstacle(y float32, entitys []Entity) bool {
-	x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
-	y += float32(rl.GetRandomValue(-300, 0))
-	treeIndex := rl.GetRandomValue(0, int32(len(resources.trees)-1))
 	slot := getFirstEmptyEntity(entitys)
-	if slot != nil {
-		*slot = Entity{
+	if slot == nil {
+		return false
+	}
+	var newObstacle Entity
+	treeIndex := rl.GetRandomValue(0, int32(len(resources.trees)-1))
+	for {
+		x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
+		yRand := float32(rl.GetRandomValue(-300, 0))
+		newObstacle = Entity{
 			x:        x,
-			y:        y,
+			y:        y + yRand,
 			width:    200,
 			height:   400,
 			hitbox:   rl.Rectangle{X: -50, Y: -25 / 2, Width: 100, Height: 25},
@@ -388,9 +386,20 @@ func addObstacle(y float32, entitys []Entity) bool {
 			damage:   1,
 			anim:     AnimState{sources: resources.trees[:], activeIndex: treeIndex},
 		}
-		return true
+		collided := false
+		for i := range entitysMaxCount {
+			entity := entitys[i]
+			if aabbCollisionCheck(entity.getHitbox(), newObstacle.getHitbox()) {
+				collided = true
+				break
+			}
+		}
+		if !collided {
+			break
+		}
 	}
-	return false
+	*slot = newObstacle
+	return true
 }
 
 func addOuterObstacle(y float32, entitys []Entity) bool {
@@ -408,8 +417,8 @@ func addOuterObstacle(y float32, entitys []Entity) bool {
 			width:    400,
 			height:   800,
 			behavior: bExists,
-			hp:       1,
-			damage:   1,
+			hp:       100,
+			damage:   0,
 			anim:     AnimState{sources: resources.trees[:], activeIndex: treeIndex},
 		}
 		return true
@@ -427,18 +436,19 @@ func addSkier(y float32, entitys []Entity) bool {
 	slot := getFirstEmptyEntity(entitys)
 	if slot != nil {
 		*slot = Entity{
-			x:        x,
-			y:        y,
-			centerX:  x,
-			width:    80,
-			height:   60,
-			vy:       -500,
-			vx:       vx,
-			hitbox:   rl.Rectangle{X: -25, Y: -25, Width: 50, Height: 50},
-			hp:       1,
-			damage:   1,
-			anim:     AnimState{sources: resources.penguin[:]},
-			behavior: bExists | bSkier | bCanBeIced | bDropsItem | bExplodesOnDeath,
+			x:         x,
+			y:         y,
+			centerX:   x,
+			width:     80,
+			height:    60,
+			wishSpeed: 500,
+			vy:        -500,
+			vx:        vx,
+			hitbox:    rl.Rectangle{X: -25, Y: -25, Width: 50, Height: 50},
+			hp:        1,
+			damage:    1,
+			anim:      AnimState{sources: resources.penguin[:]},
+			behavior:  bExists | bSkier | bCanBeIced | bDropsItem | bExplodesOnDeath,
 		}
 		return true
 	}
@@ -475,7 +485,7 @@ func addBarriers(y float32, entitys []Entity) {
 				*entity = Entity{
 					x:        -hillWidth / 2,
 					y:        y,
-					hp:       1, // TODO get rid of this once i fix the transparency debug thing
+					hp:       100, // TODO get rid of this once i fix the transparency debug thing
 					width:    20,
 					height:   100,
 					behavior: bExists,
@@ -486,7 +496,7 @@ func addBarriers(y float32, entitys []Entity) {
 				*entity = Entity{
 					x:        hillWidth / 2,
 					y:        y,
-					hp:       1, // TODO get rid of this once i fix the transparency debug thing
+					hp:       100, // TODO get rid of this once i fix the transparency debug thing
 					width:    20,
 					height:   100,
 					behavior: bExists,
@@ -500,15 +510,18 @@ func addBarriers(y float32, entitys []Entity) {
 
 func addPlayer(entitys []Entity) {
 	entitys[entitysPlayerIndex] = Entity{
+		vy:          -300,
 		y:           startingHeight,
-		width:       80,
+		width:       100,
 		height:      150,
 		hitbox:      rl.Rectangle{X: -float32(playerWidth) / 2, Y: -25 / 2, Width: float32(playerWidth), Height: 25},
 		hp:          3,
+		hpMax:       3,
 		damage:      3,
 		invulnTimer: Timer{0, 3},
 		wishSpeed:   500,
 		attackTimer: Timer{0, 1},
+		boostTimer:  Timer{0, 5},
 		anim:        AnimState{sources: resources.bear[:]},
 		behavior:    bExists | bEarnsPoints | bDynamic | bSolid,
 	}
@@ -566,10 +579,20 @@ func tryDamage(e1 *Entity, e2 *Entity) {
 
 /* returns which item was given */
 func (entity *Entity) giveRandomItem() int32 {
-	item := itemHealthUp
+	var item int32
+	if entity.hp < entity.hpMax {
+		item = itemHealth
+	} else {
+		item = itemBoost
+	}
 	switch item {
-	case itemHealthUp:
+	case itemHealth:
 		entity.hp += 1
+	case itemBoost:
+		entity.vy = -2000
+		entity.vx = 0
+		entity.behavior &^= bSolid
+		entity.boostTimer.reset()
 	}
 	return item
 }
@@ -595,9 +618,15 @@ func update(game *Game) {
 	player := &game.entitys[entitysPlayerIndex]
 	updateInput(&game.input)
 	player.attackTimer.time -= frameTime
+	wasBoosting := player.boostTimer.time > 0
+	player.boostTimer.time -= frameTime
+	if wasBoosting && player.boostTimer.time <= 0 {
+		player.invulnTimer.reset()
+		player.behavior |= bSolid
+	}
 	game.deathTimer.time -= frameTime
 	game.skierTimer.time -= frameTime
-	game.itemTimer.time -= frameTime
+	game.notificationTimer.time -= frameTime
 
 	if game.input.pause && (player.hp > 0 || game.deathTimer.time > 0) {
 		game.menuOpen = !game.menuOpen
@@ -611,27 +640,49 @@ func update(game *Game) {
 
 		/* PLAYER */
 		if player.hp > 0 {
-			if game.input.snowball && player.attackTimer.time <= 0 {
-				if addSnowball(player.x, player.y-50, player.vy-snowballSpeed, game.entitys[:]) {
-					player.attackTimer.reset()
+			if player.boostTimer.time <= 0 {
+				if game.input.action && player.attackTimer.time <= 0 {
+					if addSnowball(player.x, player.y-50, player.vy-snowballSpeed, game.entitys[:]) {
+						player.attackTimer.reset()
+					}
 				}
-			}
-			if game.input.move.X > 0 {
-				player.anim.activeIndex = rightAnimIndex
-
-				player.vx = player.wishSpeed * 2
-			} else if game.input.move.X < 0 {
-				player.anim.activeIndex = leftAnimIndex
-				player.vx = -player.wishSpeed * 2
-			} else {
-				player.anim.activeIndex = centerAnimIndex
-				player.vx = 0
-			}
-			if walking {
-				player.vy = game.input.move.Y * 100
-			} else {
-				player.vy -= playerAcceleration * frameTime
-				player.vy = max(player.vy, -player.wishSpeed)
+				if game.input.move.X > 0 {
+					if player.attackTimer.time > player.attackTimer.max*0.8 {
+						player.anim.activeIndex = rightThrowAnimIndex
+					} else if player.attackTimer.time > 0 {
+						player.anim.activeIndex = rightGrabAnimIndex
+					} else {
+						player.anim.activeIndex = rightAnimIndex
+					}
+					player.vx = player.wishSpeed * 2
+				} else if game.input.move.X < 0 {
+					if player.attackTimer.time > player.attackTimer.max*0.8 {
+						player.anim.activeIndex = leftThrowAnimIndex
+					} else if player.attackTimer.time > 0 {
+						player.anim.activeIndex = leftGrabAnimIndex
+					} else {
+						player.anim.activeIndex = leftAnimIndex
+					}
+					player.vx = -player.wishSpeed * 2
+				} else {
+					if player.attackTimer.time > player.attackTimer.max*0.8 {
+						player.anim.activeIndex = centerThrowAnimIndex
+					} else if player.attackTimer.time > 0 {
+						player.anim.activeIndex = centerGrabAnimIndex
+					} else {
+						player.anim.activeIndex = centerAnimIndex
+					}
+					player.vx = 0
+				}
+				if walking {
+					player.vy = game.input.move.Y * 100
+				} else {
+					player.vy -= playerAcceleration * frameTime
+					player.vy = max(player.vy, -player.wishSpeed)
+					player.x = min(player.x, hillWidth/2-float32(playerWidth))
+					player.x = max(player.x, -hillWidth/2+float32(playerWidth))
+					player.wishSpeed += max(0, -player.vy*frameTime) / 100
+				}
 			}
 		}
 
@@ -661,9 +712,7 @@ func update(game *Game) {
 			}
 		}
 		if game.skierTimer.time <= 0 && skierCount == 0 {
-			if addSkier(game.camera.y-viewDistance, game.entitys[:]) {
-				game.skierTimer.reset()
-			}
+			addSkier(game.camera.y-viewDistance, game.entitys[:])
 		}
 
 		/* BASIC LOOP */
@@ -672,31 +721,36 @@ func update(game *Game) {
 
 			/* MOVE */
 			if !entity.hasBehavior(bIced) {
-				entity.y += entity.vy * frameTime
-				entity.x += entity.vx * frameTime
-				if entity.behavior&bEarnsPoints != 0 {
-					entity.x = min(entity.x, hillWidth/2-float32(playerWidth))
-					entity.x = max(entity.x, -hillWidth/2+float32(playerWidth))
-					entity.wishSpeed += max(0, -entity.vy*frameTime) / 100
-				}
+
 				if entity.hp <= 0 {
 					entity.vy *= 1 - 0.5*frameTime
 					entity.vx *= 1 - 0.5*frameTime
 				} else if entity.hasBehavior(bSkier) {
+					/* X */
 					if entity.x < entity.centerX {
 						entity.vx += skierAcceleration * frameTime
 					} else {
 						entity.vx -= skierAcceleration * frameTime
 					}
-					if entity.vx < -100 {
+					if entity.vx < -400 {
 						entity.anim.activeIndex = leftAnimIndex
-					} else if entity.vx < 100 {
+					} else if entity.vx < 400 {
 						entity.anim.activeIndex = centerAnimIndex
 					} else {
 						entity.anim.activeIndex = rightAnimIndex
 					}
+					/* Y */
 					entity.y = min(player.y-150, entity.y)
+					if entity.y == player.y-150 && abs(player.x-entity.x) < 400 {
+						entity.wishSpeed = player.wishSpeed + 400
+					} else {
+						entity.wishSpeed -= 25 * frameTime
+						entity.wishSpeed = max(500, entity.wishSpeed)
+					}
+					entity.vy = -entity.wishSpeed
 				}
+				entity.y += entity.vy * frameTime
+				entity.x += entity.vx * frameTime
 			}
 
 			/* DESPAWN */
@@ -745,12 +799,30 @@ func update(game *Game) {
 						game.deathTimer.reset()
 					}
 					if e1.hasBehavior(bDropsItem) && e1.hp <= 0 {
-						game.itemCollected = player.giveRandomItem()
-						game.itemTimer.reset()
+						item := player.giveRandomItem()
+						switch item {
+						case itemHealth:
+							// TODO shake the health bar when this happens so you see it
+							game.notificationText = "DELICIOUS!"
+						case itemBoost:
+							// TODO shake the altitude text during the boost
+							game.notificationText = "BOOST!"
+						}
+						game.notificationTimer.reset()
+						game.skierTimer.reset()
 					}
 					if e2.hasBehavior(bDropsItem) && e2.hp <= 0 {
-						game.itemCollected = player.giveRandomItem()
-						game.itemTimer.reset()
+						item := player.giveRandomItem()
+						switch item {
+						case itemHealth:
+							// TODO shake the health bar when this happens so you see it
+							game.notificationText = "DELICIOUS!"
+						case itemBoost:
+							// TODO shake the altitude text during the boost
+							game.notificationText = "BOOST!"
+						}
+						game.notificationTimer.reset()
+						game.skierTimer.reset()
 					}
 					tryDeath(e1)
 					tryDeath(e2)
@@ -758,6 +830,7 @@ func update(game *Game) {
 			}
 		}
 	}
+	/* DEATH CAM */
 	if player.hp > 0 || (player.hp <= 0 && game.deathTimer.time > 0) {
 		game.camera.x = game.entitys[entitysPlayerIndex].x
 		game.camera.y = game.entitys[entitysPlayerIndex].y + cameraFollowDistance
@@ -765,21 +838,28 @@ func update(game *Game) {
 		game.camera.x = 0
 		game.camera.y += -cameraScrollSpeed * frameTime
 	}
+	/* SPAWNING POINTS */
 	if game.camera.y < game.furthestY {
 		pointsAdded := game.furthestY - game.camera.y
 		game.furthestY = game.camera.y
 		game.skierPoints += pointsAdded
 		game.outerObstaclesPoints += pointsAdded
 		game.obstaclePoints += pointsAdded
-
 	}
+	/* WIN IF WINNING */
+	if player.y <= 0 && !game.finished {
+		game.finished = true
+		game.notificationText = "FINISHED!\nNow playing endless mode..."
+		game.notificationTimer.reset()
+	}
+	/* MENU INPUT */
 	if game.menuOpen {
 		if game.input.move.Y > 0 {
 			game.menuSelection = min(1, game.menuSelection+1)
 		} else if game.input.move.Y < 0 {
 			game.menuSelection = max(0, game.menuSelection-1)
 		}
-		if game.input.snowball {
+		if game.input.action {
 			switch game.menuSelection {
 			case 0:
 				reset(game)
@@ -804,7 +884,7 @@ func reset(game *Game) {
 	game.camera.y = player.y + cameraFollowDistance
 	game.deathTimer.max = 3
 	game.skierTimer.max = 2
-	game.itemTimer.max = 1
+	game.notificationTimer.max = 2
 	game.furthestY = startingHeight
 
 	y := player.y

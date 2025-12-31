@@ -1,2 +1,3 @@
 Snowstorm font authored by Denis Sherbak
-Art by Peter Kudelin
+Some art contributed by Peter Kudelin
+Sound by Peter Kudelin

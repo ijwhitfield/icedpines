@@ -3,8 +3,19 @@ juice
 	particles
 distance shader
 
-add other items
+
+add endless mode which is only lava pits
+show how many times you got hit when you win, so the best would be zero
+add personal best altitudes
+add boulders and lava pits
 -- TODO
+add finish line
+add other items
+prevent trees from spawning within the collider of another tree (or similar check)
+	or we could produce a noise pattern and use the creases as paths
+-- 2025-12-30
+art
+-- 2025-12-29
 dead skiers drop hp recoveries
 show hp ui
 if you hit a skier with a snowball, they die
