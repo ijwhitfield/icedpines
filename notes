@@ -6,9 +6,9 @@ distance shader
 
 add endless mode which is only lava pits
 show how many times you got hit when you win, so the best would be zero
-add personal best altitudes
 add boulders and lava pits
 -- TODO
+add scoring system
 add finish line
 add other items
 prevent trees from spawning within the collider of another tree (or similar check)

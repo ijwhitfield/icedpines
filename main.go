@@ -7,9 +7,54 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"unsafe"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
+
+type Scores struct {
+	fastestTime float64
+	lowest      float32
+	fewestHits  int16
+	wins        int16
+}
+
+var scores = Scores{}
+
+func loadScores() {
+	scoreFilename := resources.dir + "scores"
+	file, err := os.Open(scoreFilename)
+	if err != nil {
+		scores = Scores{lowest: startingHeight, fastestTime: -1, fewestHits: -1, wins: 0}
+		return
+	}
+	countNeeded := unsafe.Sizeof(scores)
+	buffer := make([]uint8, countNeeded)
+	count, err := file.Read(buffer)
+	if uintptr(count) < countNeeded {
+		scores = Scores{lowest: startingHeight, fastestTime: -1, fewestHits: -1, wins: 0}
+		return
+	}
+	ptr := (*byte)(unsafe.Pointer(&scores))
+	slc := unsafe.Slice(ptr, countNeeded)
+	copy(slc, buffer)
+}
+
+func saveScores() {
+	scoreFilename := resources.dir + "scores"
+	file, err := os.Create(scoreFilename)
+	if err != nil {
+		rl.TraceLog(rl.LogError, "Failed to save scores to file")
+		return
+	}
+	ptr := (*byte)(unsafe.Pointer(&scores))
+	countNeeded := unsafe.Sizeof(scores)
+	var data []byte = unsafe.Slice(ptr, countNeeded)
+	count, err := file.Write(data)
+	if uintptr(count) < countNeeded || err != nil {
+		rl.TraceLog(rl.LogError, "Failed to save scores to file")
+	}
+}
 
 type Resources struct {
 	dir      string
@@ -135,6 +180,7 @@ type Game struct {
 	skierTimer           Timer
 	notificationTimer    Timer
 	notificationText     string
+	hits                 int16
 	menuSelection        int32
 	menuOpen             bool
 	quit                 bool
@@ -220,6 +266,10 @@ func drawText(str string, x float32, y float32) {
 	rl.DrawTextEx(resources.font, str, rl.Vector2{X: x, Y: y}, 24, 2, color.RGBA{0, 0, 0, 255})
 }
 
+func measureText(str string) float32 {
+	return rl.MeasureTextEx(resources.font, str, 24, 2).X
+}
+
 func drawTexture(texture rl.Texture2D, dst rl.Rectangle) {
 	rl.DrawTexturePro(texture, rl.Rectangle{X: 0, Y: 0, Width: float32(texture.Width), Height: float32(texture.Height)}, dst, rl.Vector2{X: 0, Y: 0}, 0, rl.White)
 }
@@ -302,12 +352,40 @@ func draw(game Game) {
 		drawText("new run", 24, float32(windowHeight/2+30))
 		rl.DrawRectangleRec(rl.Rectangle{X: 20, Y: float32(windowHeight/2 + 60), Width: 200, Height: 24}, color.RGBA{175, 175, 175, 255})
 		drawText("quit game", 24, float32(windowHeight/2+60))
-
+		/* CURSOR */
 		drawTexture(resources.snowball[0].texture, rl.Rectangle{X: 240, Y: float32(windowHeight/2 + (game.menuSelection+1)*30), Width: 24, Height: 24})
+
+		/* SCORES */
+		// if scores.wins > 0 {
+		// 	rl.DrawRectangleRec(rl.Rectangle{X: float32(windowWidth - 400), Y: float32(windowHeight / 2), Width: 400, Height: 200}, rl.White)
+		// 	str := fmt.Sprintf("Lowest altitude: %d", int32(scores.lowest/100))
+		// 	width := measureText(str)
+		// 	drawText(str, float32(windowWidth)-width-24, float32(windowHeight/2))
+		// 	str = fmt.Sprintf("Fastest time: %d", int32(scores.fastestTime))
+		// 	width = measureText(str)
+		// 	drawText(str, float32(windowWidth)-width-24, float32(windowHeight/2+30))
+		// 	str = fmt.Sprintf("Fewest hits: %d", scores.fewestHits)
+		// 	width = measureText(str)
+		// 	drawText(str, float32(windowWidth)-width-24, float32(windowHeight/2+60))
+		// 	str = fmt.Sprintf("Total wins: %d", scores.wins)
+		// 	width = measureText(str)
+		// 	drawText(str, float32(windowWidth)-width-24, float32(windowHeight/2+90))
+		// }
+		if scores.wins > 0 {
+			rl.DrawRectangleRec(rl.Rectangle{X: 0, Y: float32(windowHeight/2 + 96), Width: 440, Height: 120}, rl.White)
+			str := fmt.Sprintf("Lowest: %d m", int32(scores.lowest/100))
+			drawText(str, 24, float32(windowHeight/2+100))
+			str = fmt.Sprintf("Fastest: %d s", int32(scores.fastestTime))
+			drawText(str, 24, float32(windowHeight/2+130))
+			// str = fmt.Sprintf("Hits: %d", scores.fewestHits)
+			// drawText(str, 24, float32(windowHeight/2+160))
+			str = fmt.Sprintf("Wins: %d", scores.wins)
+			drawText(str, 24, float32(windowHeight/2+160))
+		}
 	} else {
 		player := game.entitys[entitysPlayerIndex]
-		drawText(fmt.Sprintf("altitude: %d", int32(game.furthestY/100)), 24, 20)
-		drawText(fmt.Sprintf("speed: %d", int32(-player.vy)/10), 24, 50)
+		drawText(fmt.Sprintf("altitude: %d m", int32(game.furthestY/100)), 24, 20)
+		drawText(fmt.Sprintf("speed: %d kmph", int32(-player.vy)/10), 24, 50)
 		for i := range player.hp {
 			drawTexture(resources.heart[0].texture, rl.Rectangle{X: float32(windowWidth - (i+1)*30), Y: 20, Width: 25, Height: 25})
 		}
@@ -570,11 +648,13 @@ func tryIce(e1 *Entity, e2 *Entity) {
 	}
 }
 
-func tryDamage(e1 *Entity, e2 *Entity) {
+func tryDamage(e1 *Entity, e2 *Entity) bool {
 	if e1.invulnTimer.time <= 0 && e2.damage > 0 && !e2.hasBehavior(bIced) {
 		e1.addDamage(e2.damage)
 		e1.wishSpeed *= 0.75
+		return true
 	}
+	return false
 }
 
 /* returns which item was given */
@@ -793,9 +873,17 @@ func update(game *Game) {
 						}
 					}
 
-					tryDamage(e1, e2)
-					tryDamage(e2, e1)
+					damaged := tryDamage(e1, e2)
+					if e1 == player && damaged {
+						game.hits += 1
+					}
+					damaged = tryDamage(e2, e1)
+					if e2 == player && damaged {
+						game.hits += 1
+					}
 					if (e1 == player || e2 == player) && player.hp <= 0 {
+						scores.lowest = player.y
+						saveScores()
 						game.deathTimer.reset()
 					}
 					if e1.hasBehavior(bDropsItem) && e1.hp <= 0 {
@@ -851,6 +939,18 @@ func update(game *Game) {
 		game.finished = true
 		game.notificationText = "FINISHED!\nNow playing endless mode..."
 		game.notificationTimer.reset()
+		scores.wins += 1
+		if scores.fastestTime <= -1 {
+			scores.fastestTime = game.playTime
+		} else {
+			scores.fastestTime = min(scores.fastestTime, game.playTime)
+		}
+		if scores.fewestHits <= -1 {
+			scores.fewestHits = game.hits
+		} else {
+			scores.fewestHits = min(scores.fewestHits, game.hits)
+		}
+		saveScores()
 	}
 	/* MENU INPUT */
 	if game.menuOpen {
@@ -905,4 +1005,5 @@ func initGame(game *Game) {
 	rl.SetExitKey(0)
 	rl.SetTargetFPS(60)
 	loadResources()
+	loadScores()
 }
