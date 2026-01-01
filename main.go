@@ -57,22 +57,34 @@ func saveScores() {
 }
 
 type Resources struct {
-	dir      string
-	font     rl.Font
-	penguin  [3]AnimSource
-	bear     [10]AnimSource
-	pole     [1]AnimSource
-	trees    [2]AnimSource
-	snowball [1]AnimSource
-	heart    [1]AnimSource
+	dir       string
+	font      rl.Font
+	penguin   [4]AnimSource
+	bear      [10]AnimSource
+	pole      [1]AnimSource
+	rock      [1]AnimSource
+	trap      [2]AnimSource
+	trees     [2]AnimSource
+	snowball  [1]AnimSource
+	heart     [1]AnimSource
+	music     rl.Music
+	click     rl.Sound
+	iceBreak  rl.Sound
+	rockBreak rl.Sound
+	scoop     rl.Sound
+	pickup    rl.Sound
+	win       rl.Sound
 }
 
 var resources = Resources{}
 
 const leftAnimIndex int32 = 0
+const trapOpenAnimIndex int32 = 0
 const centerAnimIndex int32 = 1
+const trapClosedAnimIndex int32 = 1
 const rightAnimIndex int32 = 2
 const deadAnimIndex int32 = 3
+const shockedAnimIndex int32 = 3
 const leftGrabAnimIndex int32 = 4
 const leftThrowAnimIndex int32 = 5
 const centerGrabAnimIndex int32 = 6
@@ -83,9 +95,13 @@ const rightThrowAnimIndex int32 = 9
 func loadResources() {
 	resources.dir, _ = filepath.Abs(filepath.Dir(os.Args[0]))
 	resources.dir += "/resources/"
+
+	/* FONTS */
 	runes := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.?-:")
-	resources.font = rl.LoadFontEx(fmt.Sprint(resources.dir, "/Snowstorm Black.otf"), 48, runes, int32(len(runes)))
-	resources.penguin = [3]AnimSource(makeAnimSources([]string{"penguinLeft.png", "penguinCenter.png", "penguinRight.png"}))
+	resources.font = rl.LoadFontEx(resources.dir+"/Snowstorm Black.otf", 48, runes, int32(len(runes)))
+
+	/* ANIMATIONS */
+	resources.penguin = [4]AnimSource(makeAnimSources([]string{"penguinLeft.png", "penguinCenter.png", "penguinRight.png", "penguinShocked.png"}))
 	resources.bear = [10]AnimSource(makeAnimSources([]string{
 		"bearLeft.png",
 		"bearCenter.png",
@@ -99,9 +115,38 @@ func loadResources() {
 		"bearRightThrow.png",
 	}))
 	resources.pole = [1]AnimSource(makeAnimSources([]string{"pole.png"}))
+	resources.rock = [1]AnimSource(makeAnimSources([]string{"boulder.png"}))
+	resources.trap = [2]AnimSource(makeAnimSources([]string{"trapOpen.png", "trapClosed.png"}))
 	resources.trees = [2]AnimSource(makeAnimSources([]string{"tree1.png", "tree2.png"}))
 	resources.snowball = [1]AnimSource(makeAnimSources([]string{"snowball.png"}))
 	resources.heart = [1]AnimSource(makeAnimSources([]string{"heart.png"}))
+
+	/* SOUNDS */
+	resources.music = rl.LoadMusicStream(resources.dir + "music.ogg")
+	resources.click = rl.LoadSound(resources.dir + "click.ogg")
+	resources.iceBreak = rl.LoadSound(resources.dir + "iceBreak.ogg")
+	resources.rockBreak = rl.LoadSound(resources.dir + "rockBreak.ogg")
+	resources.scoop = rl.LoadSound(resources.dir + "scoop.ogg")
+	resources.pickup = rl.LoadSound(resources.dir + "pickup.ogg")
+	resources.win = rl.LoadSound(resources.dir + "win.ogg")
+}
+
+func pauseSounds() {
+	rl.PauseSound(resources.click)
+	rl.PauseSound(resources.iceBreak)
+	rl.PauseSound(resources.rockBreak)
+	rl.PauseSound(resources.scoop)
+	rl.PauseSound(resources.pickup)
+	rl.PauseSound(resources.win)
+}
+
+func resumeSounds() {
+	rl.ResumeSound(resources.click)
+	rl.ResumeSound(resources.iceBreak)
+	rl.ResumeSound(resources.rockBreak)
+	rl.ResumeSound(resources.scoop)
+	rl.ResumeSound(resources.pickup)
+	rl.ResumeSound(resources.win)
 }
 
 const windowWidth int32 = 600
@@ -142,15 +187,17 @@ type Entity struct {
 	width, height float32 // this is purely visually for now, hitbox defined lower
 
 	/* GAMEPLAY */
-	behavior    uint64
-	hp, hpMax   int32
-	damage      int32
-	wishSpeed   float32
-	centerX     float32 // center of where a skier wants to be
-	hitbox      rl.Rectangle
-	attackTimer Timer
-	invulnTimer Timer
-	boostTimer  Timer
+	behavior     uint64
+	hp, hpMax    int32
+	damage       int32
+	wishSpeed    float32
+	centerX      float32 // center of where a skier wants to be
+	hitbox       rl.Rectangle
+	deathSound   rl.Sound
+	attackTimer  Timer
+	invulnTimer  Timer
+	boostTimer   Timer
+	shockedTimer Timer
 
 	/* ANIMATIONS */
 	anim AnimState
@@ -164,30 +211,83 @@ type Input struct {
 	move   rl.Vector2
 	pause  bool
 	action bool
+	mute   bool
+}
+
+const dotNothing uint32 = 0
+const dotSnow uint32 = 1
+const dotIce uint32 = 2
+const dotBlood uint32 = 3
+const dotTree uint32 = 4
+
+const dotsMaxCount = 512
+
+type Dot struct {
+	x, y, z    float32
+	vx, vy, vz float32
+	expiry     float64
+	kind       uint32
+}
+
+func createEmptyDot() Dot {
+	return Dot{}
+}
+
+func addSnow(x, y, z float32, expiry float64, count uint32, dots []Dot) {
+	for i := range dotsMaxCount {
+		if count <= 0 {
+			break
+		}
+		dot := &dots[i]
+
+		if dot.kind == dotNothing {
+			vx := float32(rl.GetRandomValue(-100, 100))
+			vy := float32(rl.GetRandomValue(-100, 100))
+			vz := float32(rl.GetRandomValue(-100, 100))
+			newSnow := Dot{
+				x:      x,
+				y:      y,
+				z:      z,
+				vx:     vx,
+				vy:     vy,
+				vz:     vz,
+				expiry: expiry,
+				kind:   dotSnow,
+			}
+			*dot = newSnow
+			count -= 1
+		}
+	}
 }
 
 const itemHealth int32 = 0
 const itemBoost int32 = 1
 
 type Game struct {
-	playTime             float64
-	skierPoints          float32
-	obstaclePoints       float32
-	outerObstaclesPoints float32
-	furthestY            float32
-	lastBarrierY         float32
-	deathTimer           Timer
-	skierTimer           Timer
-	notificationTimer    Timer
-	notificationText     string
-	hits                 int16
-	menuSelection        int32
-	menuOpen             bool
-	quit                 bool
-	finished             bool
-	camera               Camera
-	input                Input
-	entitys              [entitysMaxCount]Entity
+	playTime          float64
+	skierPoints       float32
+	treePoints        float32
+	rockPoints        float32
+	trapPoints        float32
+	outerTreePoints   float32
+	furthestY         float32
+	lastBarrierY      float32
+	deathTimer        Timer
+	skierTimer        Timer
+	hpShakeTimer      Timer
+	boostTimer        Timer
+	notificationTimer Timer
+	notificationText  string
+	hits              int16
+	menuSelection     int32
+	menuOpen          bool
+	quit              bool
+	finished          bool
+	muted             bool
+	camera            Camera
+	input             Input
+	entitys           [entitysMaxCount]Entity
+	dots              [dotsMaxCount]Dot
 }
 
 func main() {
@@ -199,10 +299,13 @@ func main() {
 }
 
 const clippingPlane float32 = 10
-const viewDistance float32 = 2000
+const viewDistance float32 = 2500
 const hillWidth float32 = 2000
 const barrierDistance float32 = 100
 const cameraFollowDistance float32 = 150
+
+// const startingHeight float32 = 30000
+
 const startingHeight float32 = 300000
 
 func cameraProjectRectangle(camera Camera, input rl.Rectangle) (rl.Rectangle, bool) {
@@ -317,8 +420,16 @@ func draw(game Game) {
 
 	}
 	slices.SortFunc(indices[:], YSort)
+	fogLayer := 0
+	fogLayerCount := 20
+	fogLayerDepth := float32(50)
 	for i := range entitysMaxCount {
 		entity := &game.entitys[indices[i].index]
+		if fogLayer < fogLayerCount && game.camera.y-entity.y < viewDistance-fogLayerDepth*float32(fogLayer+1) {
+			rl.DrawRectangle(0, 0, windowWidth, windowHeight, color.RGBA{255, 255, 255, 50})
+			// rl.DrawRectangle(0, 0, windowWidth, windowHeight, color.RGBA{255, 0, 0, uint8((255 / fogLayerCount) * (fogLayer + 1))})
+			fogLayer += 1
+		}
 		if entity.anim.sources != nil {
 			preProjection := rl.Rectangle{
 				X:      entity.x - entity.width/2,
@@ -343,6 +454,7 @@ func draw(game Game) {
 			}
 		}
 	}
+	/* DOTS */
 	/* UI */
 	if game.menuOpen {
 		rl.DrawRectangleRec(rl.Rectangle{X: 0, Y: float32(windowHeight/2 - 4), Width: 224, Height: 92}, rl.White)
@@ -375,12 +487,16 @@ func draw(game Game) {
 			rl.DrawRectangleRec(rl.Rectangle{X: 0, Y: float32(windowHeight/2 + 96), Width: 440, Height: 120}, rl.White)
 			str := fmt.Sprintf("Lowest: %d m", int32(scores.lowest/100))
 			drawText(str, 24, float32(windowHeight/2+100))
-			str = fmt.Sprintf("Fastest: %d s", int32(scores.fastestTime))
+			str = fmt.Sprintf("Quickest: %d s", int32(scores.fastestTime))
 			drawText(str, 24, float32(windowHeight/2+130))
 			// str = fmt.Sprintf("Hits: %d", scores.fewestHits)
 			// drawText(str, 24, float32(windowHeight/2+160))
 			str = fmt.Sprintf("Wins: %d", scores.wins)
 			drawText(str, 24, float32(windowHeight/2+160))
+		} else {
+			rl.DrawRectangleRec(rl.Rectangle{X: 0, Y: float32(windowHeight/2 + 96), Width: 440, Height: 120}, rl.White)
+			str := fmt.Sprintf("Lowest: %d m", int32(scores.lowest/100))
+			drawText(str, 24, float32(windowHeight/2+100))
 		}
 	} else {
 		player := game.entitys[entitysPlayerIndex]
@@ -392,7 +508,7 @@ func draw(game Game) {
 
 		if game.notificationTimer.time > 0 {
 			textWidth := rl.MeasureTextEx(resources.font, game.notificationText, 24, 2).X
-			drawText(game.notificationText, float32(windowWidth/2)-textWidth/2, 100)
+			drawText(game.notificationText, float32(windowWidth/2)-textWidth/2, float32(windowHeight/2-24))
 		}
 
 		/* DEBUG OVERLAY */
@@ -412,7 +528,6 @@ func draw(game Game) {
 
 const walking bool = false
 const showOverlay bool = false
-const sidewaysCollision bool = false
 
 func updateInput(input *Input) {
 	input.move = rl.Vector2{}
@@ -431,6 +546,7 @@ func updateInput(input *Input) {
 	input.move = rl.Vector2Normalize(input.move)
 	input.pause = rl.IsKeyPressed(rl.KeyEscape)
 	input.action = rl.IsKeyPressed(rl.KeySpace) || rl.IsKeyPressed(rl.KeyEnter) || rl.IsKeyPressed(rl.KeyZ) || rl.IsKeyPressed(rl.KeyX)
+	input.mute = rl.IsKeyPressed(rl.KeyM)
 }
 
 func getFirstEmptyEntity(entitys []Entity) *Entity {
@@ -443,7 +559,7 @@ func getFirstEmptyEntity(entitys []Entity) *Entity {
 	return nil
 }
 
-func addObstacle(y float32, entitys []Entity) bool {
+func addTree(y float32, entitys []Entity) bool {
 	slot := getFirstEmptyEntity(entitys)
 	if slot == nil {
 		return false
@@ -467,7 +583,10 @@ func addObstacle(y float32, entitys []Entity) bool {
 		collided := false
 		for i := range entitysMaxCount {
 			entity := entitys[i]
-			if aabbCollisionCheck(entity.getHitbox(), newObstacle.getHitbox()) {
+			box1 := rl.Rectangle{X: entity.x - 10, Y: entity.y - 25, Width: 20, Height: 50}
+			box2 := rl.Rectangle{X: newObstacle.x - 10, Y: newObstacle.y - 25, Width: 20, Height: 50}
+
+			if aabbCollisionCheck(box1, box2) {
 				collided = true
 				break
 			}
@@ -480,10 +599,91 @@ func addObstacle(y float32, entitys []Entity) bool {
 	return true
 }
 
-func addOuterObstacle(y float32, entitys []Entity) bool {
-	x := float32(rl.GetRandomValue(-int32(hillWidth), int32(hillWidth)))
-	for x >= -float32(hillWidth)/2 && x <= float32(hillWidth)/2 {
+func addRock(y float32, entitys []Entity) bool {
+	slot := getFirstEmptyEntity(entitys)
+	if slot == nil {
+		return false
+	}
+	var newObstacle Entity
+	for {
+		x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
+		yRand := float32(rl.GetRandomValue(-300, 0))
+		newObstacle = Entity{
+			x:        x,
+			y:        y + yRand,
+			width:    200,
+			height:   200,
+			hitbox:   rl.Rectangle{X: -80, Y: -25 / 2, Width: 160, Height: 25},
+			behavior: bExists | bSolid | bExplodesOnDeath,
+			hp:       1,
+			damage:   1,
+			anim:     AnimState{sources: resources.rock[:], activeIndex: 0},
+		}
+		collided := false
+		for i := range entitysMaxCount {
+			entity := entitys[i]
+			box1 := rl.Rectangle{X: entity.x - 10, Y: entity.y - 25, Width: 20, Height: 50}
+			box2 := rl.Rectangle{X: newObstacle.x - 10, Y: newObstacle.y - 25, Width: 20, Height: 50}
+
+			if aabbCollisionCheck(box1, box2) {
+				collided = true
+				break
+			}
+		}
+		if !collided {
+			break
+		}
+	}
+	*slot = newObstacle
+	return true
+}
+
+func addTrap(y float32, entitys []Entity) bool {
+	slot := getFirstEmptyEntity(entitys)
+	if slot == nil {
+		return false
+	}
+	var newObstacle Entity
+	for {
+		x := float32(rl.GetRandomValue(-int32(hillWidth)/2, int32(hillWidth)/2))
+		yRand := float32(rl.GetRandomValue(-300, 0))
+		newObstacle = Entity{
+			x:        x,
+			y:        y + yRand,
+			width:    200,
+			height:   150,
+			hitbox:   rl.Rectangle{X: -80, Y: -25 / 2, Width: 160, Height: 25},
+			behavior: bExists,
+			hp:       100,
+			damage:   100,
+			anim:     AnimState{sources: resources.trap[:], activeIndex: trapOpenAnimIndex},
+		}
+		collided := false
+		for i := range entitysMaxCount {
+			entity := entitys[i]
+			box1 := rl.Rectangle{X: entity.x - 10, Y: entity.y - 25, Width: 20, Height: 50}
+			box2 := rl.Rectangle{X: newObstacle.x - 10, Y: newObstacle.y - 25, Width: 20, Height: 50}
+
+			if aabbCollisionCheck(box1, box2) {
+				collided = true
+				break
+			}
+		}
+		if !collided {
+			break
+		}
+	}
+	*slot = newObstacle
+	return true
+}
+
+func addOuterTree(y float32, entitys []Entity) bool {
+	var x float32
+	for {
 		x = float32(rl.GetRandomValue(-int32(hillWidth), int32(hillWidth)))
+		if !(x >= -float32(hillWidth)/2-50 && x <= float32(hillWidth)/2+50) {
+			break
+		}
 	}
 	y += float32(rl.GetRandomValue(-300, 0))
 	treeIndex := rl.GetRandomValue(0, int32(len(resources.trees)-1))
@@ -514,19 +714,20 @@ func addSkier(y float32, entitys []Entity) bool {
 	slot := getFirstEmptyEntity(entitys)
 	if slot != nil {
 		*slot = Entity{
-			x:         x,
-			y:         y,
-			centerX:   x,
-			width:     80,
-			height:    60,
-			wishSpeed: 500,
-			vy:        -500,
-			vx:        vx,
-			hitbox:    rl.Rectangle{X: -25, Y: -25, Width: 50, Height: 50},
-			hp:        1,
-			damage:    1,
-			anim:      AnimState{sources: resources.penguin[:]},
-			behavior:  bExists | bSkier | bCanBeIced | bDropsItem | bExplodesOnDeath,
+			x:            x,
+			y:            y,
+			centerX:      x,
+			width:        100,
+			height:       80,
+			wishSpeed:    500,
+			vy:           -500,
+			vx:           vx,
+			hitbox:       rl.Rectangle{X: -50, Y: -25, Width: 100, Height: 50},
+			hp:           1,
+			damage:       1,
+			shockedTimer: Timer{0, 0.25},
+			anim:         AnimState{sources: resources.penguin[:]},
+			behavior:     bExists | bSkier | bCanBeIced | bDropsItem | bExplodesOnDeath,
 		}
 		return true
 	}
@@ -586,6 +787,9 @@ func addBarriers(y float32, entitys []Entity) {
 	}
 }
 
+const boostTime float32 = 5
+const boostSpeed float32 = 3000
+
 func addPlayer(entitys []Entity) {
 	entitys[entitysPlayerIndex] = Entity{
 		vy:          -300,
@@ -597,9 +801,9 @@ func addPlayer(entitys []Entity) {
 		hpMax:       3,
 		damage:      3,
 		invulnTimer: Timer{0, 3},
-		wishSpeed:   500,
+		wishSpeed:   700,
 		attackTimer: Timer{0, 1},
-		boostTimer:  Timer{0, 5},
+		boostTimer:  Timer{0, boostTime},
 		anim:        AnimState{sources: resources.bear[:]},
 		behavior:    bExists | bEarnsPoints | bDynamic | bSolid,
 	}
@@ -652,7 +856,11 @@ func tryDamage(e1 *Entity, e2 *Entity) bool {
 	if e1.invulnTimer.time <= 0 && e2.damage > 0 && !e2.hasBehavior(bIced) {
 		e1.addDamage(e2.damage)
 		e1.wishSpeed *= 0.75
+		if &e2.anim.sources[0] == &resources.trap[0] {
+			e2.anim.activeIndex = trapClosedAnimIndex
+		}
 		return true
+
 	}
 	return false
 }
@@ -669,22 +877,31 @@ func (entity *Entity) giveRandomItem() int32 {
 	case itemHealth:
 		entity.hp += 1
 	case itemBoost:
-		entity.vy = -2000
+		entity.vy = -boostSpeed
 		entity.vx = 0
 		entity.behavior &^= bSolid
 		entity.boostTimer.reset()
+		rl.StopSound(resources.scoop)
+		entity.attackTimer.time = 0
+		entity.anim.activeIndex = centerAnimIndex
 	}
+	rl.PlaySound(resources.pickup)
 	return item
 }
 
 func tryDeath(entity *Entity) {
 	if entity.hp <= 0 {
+		if entity.hasBehavior(bIced) {
+			rl.PlaySound(resources.iceBreak)
+		}
+		rl.PlaySound(entity.deathSound)
 		if entity.hasBehavior(bExplodesOnDeath) {
 			// TODO place particles
 			*entity = createEmpty()
 		} else {
 			entity.anim.activeIndex = deadAnimIndex
 		}
+
 	}
 }
 
@@ -696,28 +913,46 @@ func update(game *Game) {
 	// frameTime := rl.GetFrameTime()
 	frameTime := float32(1.0 / 60.0)
 	player := &game.entitys[entitysPlayerIndex]
+
+	rl.UpdateMusicStream(resources.music)
+
 	updateInput(&game.input)
-	player.attackTimer.time -= frameTime
-	wasBoosting := player.boostTimer.time > 0
-	player.boostTimer.time -= frameTime
-	if wasBoosting && player.boostTimer.time <= 0 {
-		player.invulnTimer.reset()
-		player.behavior |= bSolid
-	}
-	game.deathTimer.time -= frameTime
-	game.skierTimer.time -= frameTime
-	game.notificationTimer.time -= frameTime
 
 	if game.input.pause && (player.hp > 0 || game.deathTimer.time > 0) {
 		game.menuOpen = !game.menuOpen
+		if game.menuOpen {
+			pauseSounds()
+		} else {
+			resumeSounds()
+		}
 	}
 	if game.deathTimer.time <= 0 && player.hp <= 0 {
 		game.menuOpen = true
+		pauseSounds()
+	}
+	if game.input.mute {
+		if game.muted {
+			rl.SetMusicVolume(resources.music, 1)
+			game.muted = false
+		} else {
+			rl.SetMusicVolume(resources.music, 0)
+			game.muted = true
+		}
 	}
 
 	if !(game.menuOpen && player.hp > 0) {
 		game.playTime += float64(frameTime)
-
+		player.attackTimer.time -= frameTime
+		wasBoosting := player.boostTimer.time > 0
+		player.boostTimer.time -= frameTime
+		if wasBoosting && player.boostTimer.time <= 0 {
+			player.invulnTimer.reset()
+			game.skierTimer.reset()
+			player.behavior |= bSolid
+		}
+		game.deathTimer.time -= frameTime
+		game.skierTimer.time -= frameTime
+		game.notificationTimer.time -= frameTime
 		/* PLAYER */
 		if player.hp > 0 {
 			if player.boostTimer.time <= 0 {
@@ -730,11 +965,14 @@ func update(game *Game) {
 					if player.attackTimer.time > player.attackTimer.max*0.8 {
 						player.anim.activeIndex = rightThrowAnimIndex
 					} else if player.attackTimer.time > 0 {
+
 						player.anim.activeIndex = rightGrabAnimIndex
 					} else {
+
 						player.anim.activeIndex = rightAnimIndex
 					}
 					player.vx = player.wishSpeed * 2
+					addSnow(player.x, player.y, player.height/3, game.playTime+3, 5, game.dots[:])
 				} else if game.input.move.X < 0 {
 					if player.attackTimer.time > player.attackTimer.max*0.8 {
 						player.anim.activeIndex = leftThrowAnimIndex
@@ -744,6 +982,7 @@ func update(game *Game) {
 						player.anim.activeIndex = leftAnimIndex
 					}
 					player.vx = -player.wishSpeed * 2
+					addSnow(player.x, player.y, player.height/3, game.playTime+3, 5, game.dots[:])
 				} else {
 					if player.attackTimer.time > player.attackTimer.max*0.8 {
 						player.anim.activeIndex = centerThrowAnimIndex
@@ -754,6 +993,21 @@ func update(game *Game) {
 					}
 					player.vx = 0
 				}
+				if player.boostTimer.time > 0 {
+					player.vy = -boostSpeed
+				}
+				/* SOUND */
+				if player.attackTimer.time > player.attackTimer.max*0.8 {
+				} else if player.attackTimer.time > 0 {
+					if !rl.IsSoundPlaying(resources.scoop) {
+						rl.PlaySound(resources.scoop)
+					}
+				} else {
+					if rl.IsSoundPlaying(resources.scoop) {
+						rl.StopSound(resources.scoop)
+					}
+				}
+
 				if walking {
 					player.vy = game.input.move.Y * 100
 				} else {
@@ -773,14 +1027,54 @@ func update(game *Game) {
 		}
 
 		/* SPAWNING */
-		for game.obstaclePoints > 50 {
-			if addObstacle(game.camera.y-viewDistance, game.entitys[:]) {
-				game.obstaclePoints -= 50
+		treeDifficulty := float32(0)
+		rockDifficulty := float32(0)
+		trapDifficulty := float32(0)
+		levelDistance := startingHeight / 3
+		if player.y > levelDistance*2 {
+			treeDifficulty = (levelDistance*3 - player.y) / levelDistance
+			rockDifficulty = 0
+			trapDifficulty = 0
+		} else if player.y > levelDistance {
+			rockDifficulty = (levelDistance*2 - player.y) / (levelDistance * 2)
+			treeDifficulty = 1 - rockDifficulty
+			trapDifficulty = 0
+		} else if player.y > 0 {
+			rockDifficulty = (levelDistance - player.y) / (levelDistance * 2)
+			trapDifficulty = (levelDistance - player.y) / (levelDistance * 3)
+			treeDifficulty = 1 - rockDifficulty - trapDifficulty
+		} else {
+			treeDifficulty = 0
+			rockDifficulty = 0
+			trapDifficulty = 1
+		}
+		if treeDifficulty > 0 {
+			treeCost := 40 / treeDifficulty
+			for game.treePoints > treeCost {
+				if addTree(game.camera.y-viewDistance, game.entitys[:]) {
+					game.treePoints -= treeCost
+				}
 			}
 		}
-		for game.outerObstaclesPoints > 25 {
-			if addOuterObstacle(game.camera.y-viewDistance, game.entitys[:]) {
-				game.outerObstaclesPoints -= 25
+		if rockDifficulty > 0 {
+			rockCost := 70 / rockDifficulty
+			for game.rockPoints > rockCost {
+				if addRock(game.camera.y-viewDistance, game.entitys[:]) {
+					game.rockPoints -= rockCost
+				}
+			}
+		}
+		if trapDifficulty > 0 {
+			trapCost := 100 / trapDifficulty
+			for game.trapPoints > trapCost {
+				if addTrap(game.camera.y-viewDistance, game.entitys[:]) {
+					game.trapPoints -= trapCost
+				}
+			}
+		}
+		for game.outerTreePoints > 25 {
+			if addOuterTree(game.camera.y-viewDistance, game.entitys[:]) {
+				game.outerTreePoints -= 25
 			}
 		}
 
@@ -791,7 +1085,7 @@ func update(game *Game) {
 				skierCount += 1
 			}
 		}
-		if game.skierTimer.time <= 0 && skierCount == 0 {
+		if game.skierTimer.time <= 0 && skierCount == 0 && player.boostTimer.time <= 0 {
 			addSkier(game.camera.y-viewDistance, game.entitys[:])
 		}
 
@@ -820,14 +1114,18 @@ func update(game *Game) {
 						entity.anim.activeIndex = rightAnimIndex
 					}
 					/* Y */
-					entity.y = min(player.y-150, entity.y)
-					if entity.y == player.y-150 && abs(player.x-entity.x) < 400 {
+					entity.y = min(player.y-50, entity.y)
+					if entity.y == player.y-50 && abs(player.x-entity.x) < 200 {
 						entity.wishSpeed = player.wishSpeed + 400
+						entity.shockedTimer.reset()
 					} else {
 						entity.wishSpeed -= 25 * frameTime
 						entity.wishSpeed = max(500, entity.wishSpeed)
 					}
 					entity.vy = -entity.wishSpeed
+					if entity.shockedTimer.time > 0 {
+						entity.anim.activeIndex = shockedAnimIndex
+					}
 				}
 				entity.y += entity.vy * frameTime
 				entity.x += entity.vx * frameTime
@@ -838,7 +1136,9 @@ func update(game *Game) {
 				*entity = createEmpty()
 			}
 
+			/* TIMERS */
 			entity.invulnTimer.time -= frameTime
+			entity.shockedTimer.time -= frameTime
 
 		}
 
@@ -882,7 +1182,8 @@ func update(game *Game) {
 						game.hits += 1
 					}
 					if (e1 == player || e2 == player) && player.hp <= 0 {
-						scores.lowest = player.y
+						scores.lowest = min(scores.lowest, player.y)
+						rl.StopSound(resources.scoop)
 						saveScores()
 						game.deathTimer.reset()
 					}
@@ -891,9 +1192,23 @@ func update(game *Game) {
 						switch item {
 						case itemHealth:
 							// TODO shake the health bar when this happens so you see it
-							game.notificationText = "DELICIOUS!"
+							game.hpShakeTimer.reset()
+							which := rl.GetRandomValue(0, 3)
+							var txt string
+							switch which {
+							case 0:
+								txt = "DELICIOUS!"
+							case 1:
+								txt = "DELECTABLE!"
+							case 2:
+								txt = "SCRUMPTIOUS!"
+							case 3:
+								txt = "YUMMY!"
+							}
+							game.notificationText = txt
 						case itemBoost:
 							// TODO shake the altitude text during the boost
+							game.boostTimer.reset()
 							game.notificationText = "BOOST!"
 						}
 						game.notificationTimer.reset()
@@ -905,6 +1220,20 @@ func update(game *Game) {
 						case itemHealth:
 							// TODO shake the health bar when this happens so you see it
 							game.notificationText = "DELICIOUS!"
+							game.hpShakeTimer.reset()
+							which := rl.GetRandomValue(0, 3)
+							var txt string
+							switch which {
+							case 0:
+								txt = "DELICIOUS!"
+							case 1:
+								txt = "DELECTABLE!"
+							case 2:
+								txt = "SCRUMPTIOUS!"
+							case 3:
+								txt = "YUMMY!"
+							}
+							game.notificationText = txt
 						case itemBoost:
 							// TODO shake the altitude text during the boost
 							game.notificationText = "BOOST!"
@@ -915,6 +1244,13 @@ func update(game *Game) {
 					tryDeath(e1)
 					tryDeath(e2)
 				}
+			}
+		}
+		/* DOTS */
+		for i := range dotsMaxCount {
+			dot := &game.dots[i]
+			if dot.expiry < game.playTime {
+				*dot = createEmptyDot()
 			}
 		}
 	}
@@ -931,12 +1267,15 @@ func update(game *Game) {
 		pointsAdded := game.furthestY - game.camera.y
 		game.furthestY = game.camera.y
 		game.skierPoints += pointsAdded
-		game.outerObstaclesPoints += pointsAdded
-		game.obstaclePoints += pointsAdded
+		game.outerTreePoints += pointsAdded
+		game.treePoints += pointsAdded
+		game.trapPoints += pointsAdded
+		game.rockPoints += pointsAdded
 	}
 	/* WIN IF WINNING */
 	if player.y <= 0 && !game.finished {
 		game.finished = true
+		rl.PlaySound(resources.win)
 		game.notificationText = "FINISHED!\nNow playing endless mode..."
 		game.notificationTimer.reset()
 		scores.wins += 1
@@ -955,9 +1294,17 @@ func update(game *Game) {
 	/* MENU INPUT */
 	if game.menuOpen {
 		if game.input.move.Y > 0 {
+			prev := game.menuSelection
 			game.menuSelection = min(1, game.menuSelection+1)
+			if game.menuSelection != prev {
+				rl.PlaySound(resources.click)
+			}
 		} else if game.input.move.Y < 0 {
+			prev := game.menuSelection
 			game.menuSelection = max(0, game.menuSelection-1)
+			if game.menuSelection != prev {
+				rl.PlaySound(resources.click)
+			}
 		}
 		if game.input.action {
 			switch game.menuSelection {
@@ -966,6 +1313,7 @@ func update(game *Game) {
 			case 1:
 				game.quit = true
 			}
+			rl.PlaySound(resources.click)
 		}
 	}
 }
@@ -984,6 +1332,8 @@ func reset(game *Game) {
 	game.camera.y = player.y + cameraFollowDistance
 	game.deathTimer.max = 3
 	game.skierTimer.max = 2
+	game.hpShakeTimer.max = 2
+	game.boostTimer.max = boostTime
 	game.notificationTimer.max = 2
 	game.furthestY = startingHeight
 
@@ -1002,8 +1352,11 @@ func initGame(game *Game) {
 	game.menuOpen = true
 
 	rl.InitWindow(windowWidth, windowHeight, "iced birds")
+	rl.InitAudioDevice()
 	rl.SetExitKey(0)
 	rl.SetTargetFPS(60)
 	loadResources()
 	loadScores()
+
+	rl.PlayMusicStream(resources.music)
 }
