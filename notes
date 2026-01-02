@@ -1,11 +1,14 @@
+-- TODO
+healthbar
+shake stuff
 juice
 	camera movement
-	particles
-		have a gigantic dot array
-		put a slice in each entity such that when you draw that entity, you also draw the dots in the slice
-		adding dots is done by basically reallocing the dot slice from the dot array
-		alternatively: just make() a slice of dots as needed, then update the dots when you update the entity, and draw the dots when you draw the entity
--- TODO
+particles
+	have a gigantic dot array
+	put a slice in each entity such that when you draw that entity, you also draw the dots in the slice
+	adding dots is done by basically reallocing the dot slice from the dot array
+	alternatively: just make() a slice of dots as needed, then update the dots when you update the entity, and draw the dots when you draw the entity
+-- 2026-01-01
 add stages of peril
 	start with sparse trees, maxing out density at 2500m
 	at 2000m, start seeing boulders, maxing out density at 1500m
