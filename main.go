@@ -1688,7 +1688,7 @@ func update(game *Game) {
 						switch item {
 						case itemHealth:
 							game.healthBar.shakeMagnitude += 50
-							which := rl.GetRandomValue(0, 3)
+							which := rl.GetRandomValue(0, 5)
 							var txt string
 							switch which {
 							case 0:
