@@ -70,7 +70,7 @@ type Resources struct {
 	penguin        [4]AnimSource
 	penguinIce     [1]AnimSource
 	pole           [1]AnimSource
-	snowball       [1]AnimSource
+	snowball       [2]AnimSource
 	trap           [2]AnimSource
 	trees          [2]AnimSource
 	treeIce        [1]AnimSource
@@ -144,7 +144,7 @@ func loadResources() {
 	resources.penguin = [4]AnimSource(makeAnimSources([]string{"penguinLeft.png", "penguinCenter.png", "penguinRight.png", "penguinShocked.png"}))
 	resources.penguinIce = [1]AnimSource(makeAnimSources([]string{"penguinIce.png"}))
 	resources.pole = [1]AnimSource(makeAnimSources([]string{"pole.png"}))
-	resources.snowball = [1]AnimSource(makeAnimSources([]string{"snowball.png"}))
+	resources.snowball = [2]AnimSource(makeAnimSources([]string{"snowball1.png", "snowball2.png"}))
 	resources.trap = [2]AnimSource(makeAnimSources([]string{"trapOpen.png", "trapClosed.png"}))
 	resources.trees = [2]AnimSource(makeAnimSources([]string{"tree1.png", "tree2.png"}))
 	resources.treeIce = [1]AnimSource(makeAnimSources([]string{"treeIce.png"}))
@@ -406,9 +406,9 @@ const hillWidth float32 = 2000
 const barrierDistance float32 = 100
 const cameraFollowDistance float32 = 150
 
-const startingHeight float32 = 30000
+// const startingHeight float32 = 30000
 
-// const startingHeight float32 = 300000
+const startingHeight float32 = 300000
 
 func cameraProjectRectangle(camera Camera, input rl.Rectangle) (rl.Rectangle, bool) {
 	output := rl.Rectangle{}
