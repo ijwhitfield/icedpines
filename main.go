@@ -1,11 +1,12 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"image/color"
 	"math"
 	"os"
-	"path/filepath"
+	// "path/filepath"
 	"slices"
 	"unsafe"
 
@@ -114,13 +115,14 @@ const rightThrowAnimIndex int32 = 8
 const hurtAnimIndex int32 = 9
 
 func loadResources() {
-	resources.dir, _ = filepath.Abs(filepath.Dir(os.Args[0]))
-	resources.dir += "/resources/"
+	// resources.dir, _ = filepath.Abs(filepath.Dir(os.Args[0]))
+	// resources.dir += "/resources/"
+	resources.dir = "resources/"
 
 	/* FONTS */
-	runes := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.?-:")
-	resources.font = rl.LoadFontEx(resources.dir+"Steak Melt.otf", 48, runes, int32(len(runes)))
-	resources.fontBig = rl.LoadFontEx(resources.dir+"Steak Melt.otf", 144, runes, int32(len(runes)))
+	// runes := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!.?-:")
+	resources.font = rl.LoadFont(resources.dir + "Steak Melt.otf")
+	resources.fontBig = rl.LoadFont(resources.dir + "Steak Melt.otf")
 
 	/* ANIMATIONS */
 	resources.background = [1]AnimSource(makeAnimSources([]string{"background.png"}))
@@ -392,11 +394,24 @@ type Game struct {
 	entitys           [entitysMaxCount]Entity
 }
 
+// REQUIRED CODE FOR LOADING ASSETS ON WEB
+//
+//go:embed resources
+var ASSETS embed.FS
+
+func init() {
+	rl.AddFileSystem(ASSETS)
+}
+
 func main() {
 	game := Game{}
 	initGame(&game)
-	for !rl.WindowShouldClose() && !game.quit {
+	var update = func() {
 		updateDraw(&game)
+	}
+	rl.SetMainLoop(update)
+	for !rl.WindowShouldClose() {
+		update()
 	}
 }
 
@@ -676,8 +691,8 @@ func draw(game Game) {
 
 		rl.DrawRectangleRec(rl.Rectangle{X: 20, Y: menuY, Width: width - (float32(snowballWidth) + 8) - 4, Height: 24}, colorLightGrey)
 		drawText(strNew, 20+(width-(float32(snowballWidth)+8)-4)/2-measureText(strNew)/2, menuY)
-		rl.DrawRectangleRec(rl.Rectangle{X: 20, Y: menuY + 30, Width: width - (float32(snowballWidth) + 8) - 4, Height: 24}, colorLightGrey)
-		drawText(strQuit, 20+(width-(float32(snowballWidth)+8)-4)/2-measureText(strQuit)/2, menuY+30)
+		// rl.DrawRectangleRec(rl.Rectangle{X: 20, Y: menuY + 30, Width: width - (float32(snowballWidth) + 8) - 4, Height: 24}, colorLightGrey)
+		// drawText(strQuit, 20+(width-(float32(snowballWidth)+8)-4)/2-measureText(strQuit)/2, menuY+30)
 		/* CURSOR */
 		drawTextureRotating(resources.snowball[0].texture, rl.Rectangle{X: 20 + width - (float32(snowballWidth) + 4) - 4, Y: menuY + float32(game.menuSelection)*30, Width: float32(snowballWidth), Height: float32(snowballWidth)}, snowballRotationSpeed*float32(game.playTime))
 
@@ -1801,13 +1816,13 @@ func update(game *Game) {
 	if game.menuOpen {
 		if game.input.move.Y > 0 {
 			prev := game.menuSelection
-			game.menuSelection = min(1, game.menuSelection+1)
+			// game.menuSelection = min(1, game.menuSelection+1)
 			if game.menuSelection != prev {
 				rl.PlaySound(resources.click)
 			}
 		} else if game.input.move.Y < 0 {
 			prev := game.menuSelection
-			game.menuSelection = max(0, game.menuSelection-1)
+			// game.menuSelection = max(0, game.menuSelection-1)
 			if game.menuSelection != prev {
 				rl.PlaySound(resources.click)
 			}
